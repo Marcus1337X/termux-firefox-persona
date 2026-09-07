@@ -1,8 +1,18 @@
 # Firefox Linux Persona 任务说明
 
-## 本轮进度更新（2026-09-07）
+## 本轮进度更新（2026-09-07，媒体验收通过）
 
-本地 137 项单元测试、编译和差异检查通过。新增 `linux-firefox-audio-glx-v1` 四个组合，继承 Window 与 Dedicated/Shared/Service Worker 字体和 WebGL 资格，并增加 `audio_offline`、`audio_realtime`。四个新组合 bootstrap 和旧 24 个组合在 schema 3 下重验全部通过，旧身份 ID、种子、最终配置保持，当前本机合格池共 28 个组合。实现提交 `90bfb9e` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34112107654)。
+本地 168 项单元测试、编译与差异检查通过，隔离构建 wheel 的全部 8 个媒体资源打包检查通过。媒体模板 `linux-firefox-media-glx-v1/1.0.0` 继承 Audio 四组合，全部通过含六个 fixture 的 `media_codecs_window` 本机资格；旧 28 个组合在最终 schema 4 下全数重验，保留 ID、种子与最终配置。当前合格池共 32 个组合。20 组媒体实机生命周期验收全部通过，A/B 六种 codec 实际解码/播放、A 重启解码像素/音频保持、可信弹窗、原生 Ctrl+N 与继承检查均通过；应用进程数为基线 7、双实例 31、结束 7，测试实例已停止。验收身份为 `persona_a72ed9b8291f461fa839d22e3545463b` / `persona_9b5304f7b93a491e9c6ecbc64f672013`。实现提交 `957e7a5` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34115976144)。以下仅勾选已通过的有限 fixture 解码/播放范围。
+
+固定视频为 64×64、8 fps、2 秒的前红后 lime 绿：H.264 Baseline（`avc1.42c00a`）、VP8、VP9 profile 0、AV1 Main 8 bit。固定音频为 48 kHz 单声道、2 秒 1 kHz 正弦波：AAC-LC（`mp4a.40.2`）与 Opus。六文件约 67 KB，已完成生成后解码校验。H.264、VP9、AV1 显式 BT.601→BT.709 转换并写入元数据，VP8 使用其格式的 BT.601-like（SMPTE170M）表示；实际红/绿像素严格检查全部通过，没有放宽阈值。生成时只为 FFmpeg 局部设置 `LD_LIBRARY_PATH` 解决继承路径冲突，没有修改系统包或 Firefox 动态库环境。
+
+资格同时检查 MediaCapabilities 的 supported 与真实行为：视频播放时间推进、seek 后红/绿像素及 ended，音频 decodeAudioData 已知信号和媒体元素经 MediaElementAudioSourceNode/analyser 的静音播放测量。范围仅限这些 fixture，不承诺全部 profile/分辨率、编码、WebRTC 或媒体设备。物理输入/输出及 WebRTC 仍为 `not_verified`。
+
+环境 schema 4 纳入 codec 库、动态加载器路径顺序与候选/实际 C++ 库 hash，旧 28 个组合已显式重验通过。完整媒体探针只在单实例运行，双实例仅检查字体/Audio 继承与 canPlayType；重启比较实际解码内容和稳定播放结构，不比较实时相位、时钟或性能值。命令：`python cli.py persona bootstrap --template linux-firefox-media-glx-v1`，通过后执行 `python -m tests.persona_live --template linux-firefox-media-glx-v1`。
+
+## 上轮 Audio 验收记录（2026-09-07，schema 3）
+
+本地 137 项单元测试、编译和差异检查通过。新增 `linux-firefox-audio-glx-v1` 四个组合，继承 Window 与 Dedicated/Shared/Service Worker 字体和 WebGL 资格，并增加 `audio_offline`、`audio_realtime`。四个新组合 bootstrap 和旧 24 个组合在 schema 3 下重验全部通过，旧身份 ID、种子、最终配置保持，当时本机合格池共 28 个组合。实现提交 `90bfb9e` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34112107654)。
 
 明色/暗色组合分别配置原生默认 AudioContext 44100/48000 Hz。Offline 探针两次实际渲染双声道、2048 帧 buffer/gain 图并核对样本、hash、结构和自然状态；Realtime 探针通过 BiDi `click_native` 可信点击激活，检查状态转换、时钟及 analyser 波形/频谱，末端静音并清理资源。旧 `click` 的默认 CSS 左键路径优先使用 DOM 合成点击，不能保证可信激活；其 human/坐标路径另用 xdotool。历史验收使用默认 CSS 路径，点击成功不能证明 `isTrusted` 或可信用户激活。
 
@@ -10,7 +20,7 @@
 
 命令：`python cli.py persona bootstrap --template linux-firefox-audio-glx-v1`；通过后执行 `python -m tests.persona_live --template linux-firefox-audio-glx-v1`。旧身份使用 `python cli.py persona requalify PERSONA_ID` 保留 ID、种子、最终配置和 profile 重新验证。
 
-此前 Worker 模板的四个组合及旧 20 个组合在上一环境取得资格，15 组生命周期检查通过；实现提交 `05c20f3` 的 [CI 记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34109507645) 仅对应该历史实现。旧模板资格范围不扩大；Liberation、完整 graphics precision/limits/extensions、核显身份、物理音频/媒体/网络及标签页拖出仍未完成。以下勾选只对应已取得实机证据的明确子项，Audio 只勾选本轮实际通过的采样率、状态、analyser 和双声道图内运算，完整声道、物理设备及延迟仍未完成。
+此前 Worker 模板的四个组合及旧 20 个组合在上一环境取得资格，15 组生命周期检查通过；实现提交 `05c20f3` 的 [CI 记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34109507645) 仅对应该历史实现。旧模板资格范围不扩大；Liberation、完整 graphics precision/limits/extensions、核显身份、物理音频/媒体/网络及标签页拖出仍未完成。以下勾选只对应已取得实机证据的明确子项，Audio 只勾选该轮实际通过的采样率、状态、analyser 和双声道图内运算，完整声道、物理设备及延迟仍未完成。
 
 ## 目标与范围
 

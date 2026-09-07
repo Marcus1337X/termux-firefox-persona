@@ -120,11 +120,36 @@ Offline 探针使用真实双声道、2048 帧的 `OfflineAudioContext`，将固
 
 这些资格覆盖浏览器图内的音频运算。物理输入和输出仍标记 `not_verified`；双声道渲染不证明扬声器或麦克风具备相应能力，延迟只记录为诊断值。Audio 在三类 Worker 中标记 `notapplicable`。媒体设备、codec 与完整音频后端兼容尚未验收。
 
-Audio 生命周期脚本保留原字体和 Worker 检查。双实例阶段只创建默认 AudioContext、读取采样率后立即关闭，核对两个实例与各自配置一致且采样率不同，并检查新标签、刷新、弹窗、Ctrl+N 与重启继承。完整探针在单实例阶段执行；重启比较 Offline 的两次实际测量和 Realtime 的稳定结构、状态、频谱峰值，不要求实时相位、时钟或延迟重复相等。本轮四个新组合及旧 24 个组合在 schema 3 下全部通过资格验证，当前本机合格池为 28 个组合。Audio 生命周期 16 组实机验收通过，包括不同默认采样率、实际音频测量、重启保持及可信点击/弹窗；应用进程数为基线 7、双实例 31、结束 7。本地 137 项单元测试、编译和差异检查通过；实现提交 `90bfb9e` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34112107654)。
+Audio 生命周期脚本保留原字体和 Worker 检查。双实例阶段只创建默认 AudioContext、读取采样率后立即关闭，核对两个实例与各自配置一致且采样率不同，并检查新标签、刷新、弹窗、Ctrl+N 与重启继承。完整探针在单实例阶段执行；重启比较 Offline 的两次实际测量和 Realtime 的稳定结构、状态、频谱峰值，不要求实时相位、时钟或延迟重复相等。Audio 轮次的四个新组合及旧 24 个组合在 schema 3 下全部通过资格验证，当时合格池为 28 个组合。Audio 生命周期 16 组实机验收通过，包括不同默认采样率、实际音频测量、重启保持及可信点击/弹窗；应用进程数为基线 7、双实例 31、结束 7。本地 137 项单元测试、编译和差异检查通过；实现提交 `90bfb9e` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34112107654)。
+
+`linux-firefox-media-glx-v1/1.0.0` 是媒体模板，四个完整组合已取得本机资格，继承 Audio 配置，增加必需资格 `media_codecs_window`。这项资格要求以下六个内置 fixture 全部通过，任一种失败都不能进入严格池：
+
+| Fixture | 编码范围 | 实际内容 |
+| --- | --- | --- |
+| `h264.mp4` | H.264 Baseline，`avc1.42c00a` | 64×64、8 fps、2 秒，前红后 lime 绿 |
+| `vp8.webm` | VP8 | 同上 |
+| `vp9.webm` | VP9 profile 0 | 同上 |
+| `av1.webm` | AV1 Main、8 bit | 同上 |
+| `aac.m4a` | AAC-LC，`mp4a.40.2` | 48 kHz、单声道、2 秒、1 kHz 正弦波 |
+| `opus.webm` | Opus | 同上 |
+
+H.264、VP9、AV1 fixture 显式完成 BT.601 到 BT.709 的转换并写入色彩元数据；VP8 使用其格式的 BT.601-like（SMPTE170M）色彩表示。最终六种 codec 的实际解码与播放全部通过，红/绿像素阈值保持严格，未因转换问题放宽。
+
+资源由探针自己的 loopback 白名单路由提供，支持视频 seek 所需的单段字节 Range，不读取任意路径。探针检查 `canPlayType` 与 `MediaCapabilities.decodingInfo().supported`，同时检查真实解码和播放：视频必须推进播放时间、到达结束，并在 seek 后读回对应红/绿像素；音频必须经过 `decodeAudioData` 得到已知信号，再由媒体元素经 `MediaElementAudioSourceNode` 进入 analyser 验证波形和频谱。实际点击要求 `isTrusted=true`，输出图末端静音，成功或失败均清理资源。
+
+这些观测仅证明上述 fixture 的有限 profile、尺寸和时长，不代表所有编码 profile、分辨率、编码能力、WebRTC 或媒体设备已验证。物理输入/输出与 WebRTC 均为 `not_verified`；`smooth` 和 `powerEfficient` 保留观测，不作为稳定身份或性能承诺。
+
+```sh
+python cli.py persona bootstrap --template linux-firefox-media-glx-v1
+python cli.py persona create --template linux-firefox-media-glx-v1 --start
+python -m tests.persona_live --template linux-firefox-media-glx-v1
+```
+
+创建和生命周期命令需要先在本机获得完整资格。媒体完整探针仍仅在单实例阶段运行；双实例只复用轻量字体/Audio 检查和六种 `canPlayType` 查询。重启比较实际解码像素/音频与稳定播放结构，不比较实时波形相位、时钟和性能观测。本轮 168 项单元测试、编译和差异检查通过；六个 fixture 合计约 67 KB，已完成生成后解码校验，隔离构建的 wheel 包含全部 8 个媒体资源文件。四个媒体组合与旧 28 个组合在 schema 4 下全部通过资格检查，旧身份 ID、种子和最终配置保持，当前本机合格池为 32 个组合。媒体生命周期 20 组实机验收全部通过：A/B 六种 codec 实际解码/播放、A 重启后的解码像素和音频保持，以及可信弹窗、原生 Ctrl+N 和其他继承检查均通过。应用进程数为基线 7、双实例 31、结束 7；测试实例已停止。验收身份与详细记录见 `docs/DEVELOPMENT.md`。实现提交 `957e7a5` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34115976144)。
 
 资格报告只覆盖模板列出的必需能力；任何模板之外的额外观测不等于完整第二批验收。核显模板仍是候选；只修改 renderer 名称不能获得核显资格。`software` 为默认执行后端，`native` 仅表示不强制软件渲染，不能自动等同于手机 GPU 加速。
 
-配置、资格、profile 和日志默认存于 Termux 私有目录 `~/.tbp/personas`。`--root` 可指定另一个私有测试目录，放在子命令之前。共享存储不能用作 profile 根目录。Firefox/后端/字体环境变化会使原资格失效，不会静默修改已保存身份。环境快照现为 schema 3，另记录音频客户端选择、配置摘要与可获得的服务端事实；这些信息变化也需重新验证。旧 schema 的资格不能直接沿用。
+配置、资格、profile 和日志默认存于 Termux 私有目录 `~/.tbp/personas`。`--root` 可指定另一个私有测试目录，放在子命令之前。共享存储不能用作 profile 根目录。Firefox/后端/字体环境变化会使原资格失效，不会静默修改已保存身份。环境快照现为 schema 4，记录音频客户端选择、配置摘要与可获得的服务端事实，并纳入 codec 库、动态加载器路径及按加载顺序排列的候选 C++ 库及实际库 hash。这些信息变化也需重新验证；旧 schema 的资格不能直接沿用，本轮旧 28 个组合已显式重验通过。
 
 默认截图和其他相对导出路径位于该 Persona 私有实例目录，下载位于其 profile 的 `downloads`。环境变化后，先停止旧身份，再显式重新验证：
 
