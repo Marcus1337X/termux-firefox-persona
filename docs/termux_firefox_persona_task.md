@@ -6,7 +6,7 @@
 
 软件 GLX 路径已实际验证 WebGL1/2 shader 编译及链接、整幅红色 RGBA 输出和 RGBA8 framebuffer 绿色 RGBA 输出。该路径使用真实 Mesa llvmpipe 软件后端，不是核显身份模板。precision、limits 和 extensions 目前主要为查询结果，未完成全部功能行为验收；Worker/OffscreenCanvas WebGL 尚未验证。软件 GLX 的八组生命周期验收也已全部通过；双实例运行时应用进程数为 30，测试实例均已停止。
 
-地理位置及四项外观媒体查询已具备当前模板范围内的实机证据；字体功能尚未实现，完整第一批和第二批仍未完成。本轮 CI 尚未执行，此前 CI 通过不能作为本轮结果。
+地理位置及四项外观媒体查询已具备当前模板范围内的实机证据；字体功能尚未实现，完整第一批和第二批仍未完成。本轮实现提交 `8e2faeb` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34103445934)。
 
 下列勾选仅表示相应明确子项已有证据；包含多项行为的条目，在全部验证前保持未勾选。环境变更后的旧 Persona 会明确拒绝恢复，本轮尚未提供保留原身份的重新资格流程；不会静默更新其配置。
 
