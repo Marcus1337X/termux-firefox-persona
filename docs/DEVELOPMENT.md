@@ -1,5 +1,33 @@
 # 开发与本机验收记录
 
+## 2026-09-07：地理位置与外观组合
+
+新增 `linux-firefox-region-appearance-v1` 的四个组合：上海/纽约各自配明暗外观，坐标和时区受预设约束，精度为 50 米。已有八个基础组合保持原验证范围。
+
+- 地理位置在空白页阶段通过 BiDi 安装到实例 user context，网站仍使用原生权限流程。
+- 本地探针检查初始 `prompt`、授权后坐标与精度、拒绝后的错误码 1，以及最后恢复到 `prompt`。权限变更只针对临时 loopback origin。
+- 四项外观查询纳入必需资格：配色、减少动画、对比度、forced-colors。Worker 不适用的接口单独记录。
+- 四个组合均在当前 K60 至尊版通过完整资格检查，已进入本机合格池。
+- 重启后再次取得正确位置，原页面权限保持 `prompt`。
+- 原生 Ctrl+N 验收发现上游将组合键当作普通字符串丢弃；输入层已增加修饰键解析与事件回归测试。
+
+地区外观模板的八组窗口验收全部通过，覆盖双实例隔离、恢复、定位权限、脚本弹窗、原生 Ctrl+N 与主窗口联动关闭。本轮本地 79 项单元测试通过；CI 结果在完成后补充。字体和核显模板仍未完成资格验证，第三批的持久权限与网络能力也未据此宣称完成。
+
+## 2026-09-07：软件 GLX 与实际 WebGL 绘制
+
+三个独立 profile 的串行对照确认：默认路径及强制 EGL 均报 `FEATURE_FAILURE_NO_DISPLAY`；仅加入 `gfx.x11-egl.force-disabled=true` 的 GLX 路径成功，Firefox 返回 Mesa / `llvmpipe, or similar`。未修改全局环境或旧模板的渲染策略。
+
+新增 `linux-firefox-software-glx-v1`，四个地区外观组合全部通过本机资格检查。它请求实际软件后端，并验证 Window 的 WebGL1/2：
+
+- 顶点与片元 shader 编译、链接。
+- 覆盖整个小画布的三角形及精确红色 RGBA 像素读回。
+- RGBA8 texture、framebuffer completeness 与精确绿色 RGBA 像素读回。
+- 两种 context 各自的真实 vendor/renderer；记录后再释放 context。
+
+资格判定逐项检查证据，错误像素即使伴随 `passed=true` 也会失败。precision、limits、extensions 保留为查询观测，Worker WebGL 标记 `not_verified`。这不是核显身份或完整第二批资格。
+
+连同旧八个基础组合与四个地区外观组合，当前本机合格组合共 16 个。软件 GLX 的八组窗口验收全部通过，包含双实例、定位与图形资格恢复、脚本弹窗、Ctrl+N 及主窗口联动。双实例观测为 30 个应用进程，测试实例均已停止。
+
 ## 2026-09-07：隔离底座与基础组合资格
 
 环境：K60 至尊版，Android Termux，Firefox 154.0.1，Mesa 26.0.6-2，Python 3.14.6。上游基线 `b95eccd3d1abc188c3aa488a23c519ebacc99fcf`。

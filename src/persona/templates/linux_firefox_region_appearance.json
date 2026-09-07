@@ -1,0 +1,217 @@
+{
+  "schema_version": 1,
+  "templates": [
+    {
+      "schema_version": 1,
+      "id": "linux-firefox-region-appearance-v1",
+      "version": "1.0.0",
+      "status": "candidate",
+      "strict_eligible": false,
+      "metadata": {
+        "phase": 1,
+        "description": "Candidate regional geolocation and appearance combinations; requires local permission and media-query verification",
+        "identity_source": "runtime_firefox_probe",
+        "execution_backend": "software/native",
+        "hardware_class": "non-integrated-gpu",
+        "verification_required": "current_environment_and_full_combination"
+      },
+      "base_config": {
+        "browser": {
+          "family": "firefox",
+          "platform": "Linux x86_64",
+          "oscpu": "Linux x86_64",
+          "app_version": "5.0 (X11)",
+          "firefox_version": "runtime",
+          "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:{firefox_version_major}.0) Gecko/20100101 Firefox/{firefox_version_major}.0"
+        },
+        "graphics": {
+          "identity_class": "native-linux-firefox",
+          "vendor": "runtime",
+          "renderer": "runtime",
+          "execution_backend": "software/native",
+          "hardware_class": "non-integrated-gpu"
+        },
+        "input": {
+          "pointer": "fine",
+          "hover": true,
+          "max_touch_points": 0
+        },
+        "appearance": {
+          "color_scheme": "light",
+          "reduced_motion": false,
+          "forced_colors": false
+        }
+      },
+      "required_capabilities": [
+        "browser_identity",
+        "cpu_window_worker",
+        "display_window",
+        "locale_window_worker_http",
+        "geolocation_window",
+        "appearance_window"
+      ],
+      "variants": [
+        {
+          "variant_id": "zh-cn-light-1280x800-c2",
+          "cpu": {
+            "hardware_concurrency": 2
+          },
+          "display": {
+            "window_policy": "maximized",
+            "viewport_policy": "derived",
+            "screen_width": 1280,
+            "screen_height": 800,
+            "avail_width": 1280,
+            "avail_height": 800,
+            "device_pixel_ratio": 1,
+            "color_depth": 24,
+            "pixel_depth": 24,
+            "orientation": "landscape"
+          },
+          "locale": {
+            "locale": "zh-CN",
+            "languages": [
+              "zh-CN",
+              "zh",
+              "en-US",
+              "en"
+            ],
+            "accept_language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            "timezone": "Asia/Shanghai"
+          },
+          "geolocation": {
+            "latitude": 31.2304,
+            "longitude": 121.4737,
+            "accuracy": 50,
+            "permission": "prompt"
+          },
+          "appearance": {
+            "color_scheme": "light",
+            "reduced_motion": false,
+            "contrast": "no-preference",
+            "forced_colors": false
+          }
+        },
+        {
+          "variant_id": "zh-cn-dark-1366x768-c4",
+          "cpu": {
+            "hardware_concurrency": 4
+          },
+          "display": {
+            "window_policy": "maximized",
+            "viewport_policy": "derived",
+            "screen_width": 1366,
+            "screen_height": 768,
+            "avail_width": 1366,
+            "avail_height": 768,
+            "device_pixel_ratio": 1,
+            "color_depth": 24,
+            "pixel_depth": 24,
+            "orientation": "landscape"
+          },
+          "locale": {
+            "locale": "zh-CN",
+            "languages": [
+              "zh-CN",
+              "zh",
+              "en-US",
+              "en"
+            ],
+            "accept_language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            "timezone": "Asia/Shanghai"
+          },
+          "geolocation": {
+            "latitude": 31.2304,
+            "longitude": 121.4737,
+            "accuracy": 50,
+            "permission": "prompt"
+          },
+          "appearance": {
+            "color_scheme": "dark",
+            "reduced_motion": true,
+            "contrast": "no-preference",
+            "forced_colors": false
+          }
+        },
+        {
+          "variant_id": "en-us-light-1280x800-c2",
+          "cpu": {
+            "hardware_concurrency": 2
+          },
+          "display": {
+            "window_policy": "maximized",
+            "viewport_policy": "derived",
+            "screen_width": 1280,
+            "screen_height": 800,
+            "avail_width": 1280,
+            "avail_height": 800,
+            "device_pixel_ratio": 1,
+            "color_depth": 24,
+            "pixel_depth": 24,
+            "orientation": "landscape"
+          },
+          "locale": {
+            "locale": "en-US",
+            "languages": [
+              "en-US",
+              "en"
+            ],
+            "accept_language": "en-US,en;q=0.9",
+            "timezone": "America/New_York"
+          },
+          "geolocation": {
+            "latitude": 40.7128,
+            "longitude": -74.006,
+            "accuracy": 50,
+            "permission": "prompt"
+          },
+          "appearance": {
+            "color_scheme": "light",
+            "reduced_motion": false,
+            "contrast": "no-preference",
+            "forced_colors": false
+          }
+        },
+        {
+          "variant_id": "en-us-dark-1366x768-c4",
+          "cpu": {
+            "hardware_concurrency": 4
+          },
+          "display": {
+            "window_policy": "maximized",
+            "viewport_policy": "derived",
+            "screen_width": 1366,
+            "screen_height": 768,
+            "avail_width": 1366,
+            "avail_height": 768,
+            "device_pixel_ratio": 1,
+            "color_depth": 24,
+            "pixel_depth": 24,
+            "orientation": "landscape"
+          },
+          "locale": {
+            "locale": "en-US",
+            "languages": [
+              "en-US",
+              "en"
+            ],
+            "accept_language": "en-US,en;q=0.9",
+            "timezone": "America/New_York"
+          },
+          "geolocation": {
+            "latitude": 40.7128,
+            "longitude": -74.006,
+            "accuracy": 50,
+            "permission": "prompt"
+          },
+          "appearance": {
+            "color_scheme": "dark",
+            "reduced_motion": true,
+            "contrast": "no-preference",
+            "forced_colors": false
+          }
+        }
+      ]
+    }
+  ]
+}

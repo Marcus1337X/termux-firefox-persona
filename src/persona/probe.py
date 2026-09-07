@@ -99,6 +99,9 @@ PROBE_HTML = r'''<!doctype html>
       colorScheme: matches('(prefers-color-scheme: dark)') === true ? 'dark' :
                    (matches('(prefers-color-scheme: light)') === true ? 'light' : null),
       reducedMotion: matches('(prefers-reduced-motion: reduce)'),
+      contrast: matches('(prefers-contrast: more)') === true ? 'more' :
+                (matches('(prefers-contrast: less)') === true ? 'less' :
+                 (matches('(prefers-contrast: custom)') === true ? 'custom' : 'no-preference')),
       forcedColors: matches('(forced-colors: active)')
     };
   }
@@ -114,31 +117,167 @@ PROBE_HTML = r'''<!doctype html>
     };
   }
   function webglValues() {
-    const c = document.createElement('canvas');
-    let contextCreationError = null;
-    c.addEventListener('webglcontextcreationerror', function(e) {
-      contextCreationError = e.statusMessage || String(e);
-    });
-    const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
-    if (!gl) return {supported: false, contextCreationError: contextCreationError};
-    const debug = gl.getExtension('WEBGL_debug_renderer_info');
-    let maxViewport = null;
-    try { maxViewport = Array.from(gl.getParameter(gl.MAX_VIEWPORT_DIMS)); }
-    catch (_) {}
-    let extensions = [];
-    try { extensions = gl.getSupportedExtensions() || []; } catch (_) {}
+    function precision(gl, shaderType, precisionType) {
+      try {
+        const value = gl.getShaderPrecisionFormat(shaderType, precisionType);
+        return value ? {rangeMin: value.rangeMin, rangeMax: value.rangeMax,
+                        precision: value.precision} : null;
+      } catch (_) { return null; }
+    }
+    function inspect(kind) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 2; canvas.height = 2;
+      let contextCreationError = null;
+      canvas.addEventListener('webglcontextcreationerror', function(e) {
+        contextCreationError = e.statusMessage || String(e);
+      });
+      const gl = canvas.getContext(kind, {preserveDrawingBuffer: true});
+      if (!gl) {
+        return {supported: false, contextCreationError: contextCreationError,
+                behavior: {passed: false, reason: 'context-unavailable'}};
+      }
+      const is2 = kind === 'webgl2';
+      const debug = gl.getExtension('WEBGL_debug_renderer_info');
+      let maxViewport = null;
+      try { maxViewport = Array.from(gl.getParameter(gl.MAX_VIEWPORT_DIMS)); }
+      catch (_) {}
+      let extensions = [];
+      try { extensions = gl.getSupportedExtensions() || []; } catch (_) {}
+      const limits = {};
+      for (const name of ['MAX_TEXTURE_SIZE', 'MAX_CUBE_MAP_TEXTURE_SIZE',
+                          'MAX_VERTEX_ATTRIBS', 'MAX_COMBINED_TEXTURE_IMAGE_UNITS',
+                          'MAX_FRAGMENT_UNIFORM_VECTORS', 'MAX_VERTEX_UNIFORM_VECTORS']) {
+        try { limits[name] = gl.getParameter(gl[name]); } catch (_) { limits[name] = null; }
+      }
+      if (is2) {
+        for (const name of ['MAX_UNIFORM_BUFFER_BINDINGS', 'MAX_3D_TEXTURE_SIZE',
+                            'MAX_ARRAY_TEXTURE_LAYERS']) {
+          try { limits[name] = gl.getParameter(gl[name]); } catch (_) { limits[name] = null; }
+        }
+      }
+      const precisionValues = {
+        vertexHighFloat: precision(gl, gl.VERTEX_SHADER, gl.HIGH_FLOAT),
+        fragmentHighFloat: precision(gl, gl.FRAGMENT_SHADER, gl.HIGH_FLOAT),
+        vertexMediumFloat: precision(gl, gl.VERTEX_SHADER, gl.MEDIUM_FLOAT),
+        fragmentMediumFloat: precision(gl, gl.FRAGMENT_SHADER, gl.MEDIUM_FLOAT)
+      };
+      const errors = [];
+      function note(label, value) { if (!value) errors.push(label); return value; }
+      const vertexSource = is2 ? '#version 300 es\nin vec2 p;\nvoid main(){gl_Position=vec4(p,0.0,1.0);}'
+        : 'attribute vec2 p;\nvoid main(){gl_Position=vec4(p,0.0,1.0);}';
+      const fragmentSource = is2 ? '#version 300 es\nprecision highp float;\nout vec4 color;\nvoid main(){color=vec4(1.0,0.0,0.0,1.0);}'
+        : 'precision mediump float;\nvoid main(){gl_FragColor=vec4(1.0,0.0,0.0,1.0);}';
+      function shader(type, source, label) {
+        const value = gl.createShader(type);
+        if (!value) { errors.push(label + '-create'); return null; }
+        gl.shaderSource(value, source); gl.compileShader(value);
+        if (!gl.getShaderParameter(value, gl.COMPILE_STATUS)) {
+          errors.push(label + '-compile');
+          gl.deleteShader(value); return null;
+        }
+        return value;
+      }
+      const vertex = shader(gl.VERTEX_SHADER, vertexSource, 'vertex');
+      const fragment = shader(gl.FRAGMENT_SHADER, fragmentSource, 'fragment');
+      const program = gl.createProgram();
+      let linked = false;
+      if (program && vertex && fragment) {
+        gl.attachShader(program, vertex); gl.attachShader(program, fragment);
+        gl.linkProgram(program); linked = !!gl.getProgramParameter(program, gl.LINK_STATUS);
+        if (!linked) errors.push('link');
+      } else { errors.push('program-create'); }
+      let triangle = {compile: !!(vertex && fragment), link: linked,
+                      redPixels: 0, nonEmpty: false, readback: false};
+      if (program && linked) {
+        gl.useProgram(program);
+        const buffer = gl.createBuffer();
+        const location = gl.getAttribLocation(program, 'p');
+        if (buffer && location >= 0) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+          // Cover the complete 2x2 canvas so every sampled pixel has the
+          // shader's exact red output.
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(location); gl.vertexAttribPointer(location, 2, gl.FLOAT, false, 0, 0);
+          gl.viewport(0, 0, 2, 2); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+          const pixels = new Uint8Array(16); gl.readPixels(0, 0, 2, 2, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+          let redPixels = 0; let anyPixel = false; let exactRed = true;
+          for (let i = 0; i < pixels.length; i += 4) {
+            redPixels += pixels[i] > 0 ? 1 : 0;
+            anyPixel = anyPixel || pixels[i] > 0 || pixels[i + 1] > 0 || pixels[i + 2] > 0;
+            exactRed = exactRed && pixels[i] === 255 && pixels[i + 1] === 0 &&
+                       pixels[i + 2] === 0 && pixels[i + 3] === 255;
+          }
+          triangle = {compile: true, link: true, redPixels: redPixels,
+                      nonEmpty: redPixels > 0, exactRed: exactRed,
+                      rgba: Array.from(pixels.slice(0, 4)),
+                      readback: exactRed && anyPixel && gl.getError() === gl.NO_ERROR};
+          gl.deleteBuffer(buffer);
+        } else { errors.push('triangle-buffer-or-attribute'); }
+      }
+      const texture = gl.createTexture(); const framebuffer = gl.createFramebuffer();
+      let framebufferCheck = {complete: false, readback: false, rgba8: false,
+                              exactGreen: false, rgba: null};
+      if (texture && framebuffer) {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        const internal = is2 && gl.RGBA8 !== undefined ? gl.RGBA8 : gl.RGBA;
+        try {
+          gl.texImage2D(gl.TEXTURE_2D, 0, internal, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+          framebufferCheck.rgba8 = true;
+        } catch (_) { errors.push('rgba8-texture'); }
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+        framebufferCheck.complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+        if (!framebufferCheck.complete) errors.push('framebuffer-complete');
+        if (framebufferCheck.complete) {
+          gl.clearColor(0, 1, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+          const readback = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, readback);
+          framebufferCheck.rgba = Array.from(readback);
+          framebufferCheck.exactGreen = readback[0] === 0 && readback[1] === 255 &&
+                                        readback[2] === 0 && readback[3] === 255;
+          framebufferCheck.readback = framebufferCheck.exactGreen && gl.getError() === gl.NO_ERROR;
+          if (!framebufferCheck.readback) errors.push('framebuffer-readback');
+        }
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(framebuffer); gl.deleteTexture(texture);
+      } else { errors.push('framebuffer-create'); }
+      if (vertex) gl.deleteShader(vertex); if (fragment) gl.deleteShader(fragment); if (program) gl.deleteProgram(program);
+      const behavior = {compile: triangle.compile, link: triangle.link,
+                        triangle: triangle, framebuffer: framebufferCheck,
+                        passed: triangle.compile && triangle.link && triangle.nonEmpty && triangle.exactRed && triangle.readback &&
+                                framebufferCheck.rgba8 && framebufferCheck.complete && framebufferCheck.exactGreen &&
+                                framebufferCheck.readback && errors.length === 0,
+                        errors: errors};
+      // Copy identity values before releasing the context.  Some Firefox
+      // builds return null from getParameter after loseContext().
+      const identity = {
+        vendor: gl.getParameter(gl.VENDOR), renderer: gl.getParameter(gl.RENDERER),
+        unmaskedVendor: debug ? gl.getParameter(debug.UNMASKED_VENDOR_WEBGL) : null,
+        unmaskedRenderer: debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : null,
+        version: gl.getParameter(gl.VERSION), shadingLanguageVersion: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
+        maxTextureSize: limits.MAX_TEXTURE_SIZE, maxCubeMapTextureSize: limits.MAX_CUBE_MAP_TEXTURE_SIZE,
+        maxViewportDims: maxViewport, extensionCount: extensions.length, extensions: extensions,
+        limits: limits, precision: precisionValues
+      };
+      const lose = gl.getExtension('WEBGL_lose_context');
+      if (lose) { try { lose.loseContext(); } catch (_) {} }
+      return {supported: true, contextCreationError: contextCreationError,
+              ...identity, behavior: behavior};
+    }
+    const webgl1 = inspect('webgl');
+    const webgl2 = inspect('webgl2');
     return {
-      supported: true,
-      contextCreationError: contextCreationError,
-      vendor: gl.getParameter(gl.VENDOR), renderer: gl.getParameter(gl.RENDERER),
-      unmaskedVendor: debug ? gl.getParameter(debug.UNMASKED_VENDOR_WEBGL) : null,
-      unmaskedRenderer: debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : null,
-      version: gl.getParameter(gl.VERSION),
-      shadingLanguageVersion: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
-      maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
-      maxCubeMapTextureSize: gl.getParameter(gl.MAX_CUBE_MAP_TEXTURE_SIZE),
-      maxViewportDims: maxViewport, extensionCount: extensions.length,
-      extensions: extensions
+      supported: webgl1.supported,
+      contextCreationError: webgl1.contextCreationError,
+      vendor: webgl1.vendor, renderer: webgl1.renderer,
+      unmaskedVendor: webgl1.unmaskedVendor, unmaskedRenderer: webgl1.unmaskedRenderer,
+      version: webgl1.version, shadingLanguageVersion: webgl1.shadingLanguageVersion,
+      maxTextureSize: webgl1.maxTextureSize, maxCubeMapTextureSize: webgl1.maxCubeMapTextureSize,
+      maxViewportDims: webgl1.maxViewportDims, extensionCount: webgl1.extensionCount,
+      extensions: webgl1.extensions, limits: webgl1.limits, precision: webgl1.precision,
+      webgl1: webgl1, webgl2: webgl2,
+      behavior: {webgl1: webgl1.behavior, webgl2: webgl2.behavior}
     };
   }
   function canvasValues() {
@@ -365,12 +504,29 @@ class ProbeRunner:
         self.timeout = float(timeout)
         self.poll_interval = float(poll_interval)
 
-    async def run(self, context: str, *, timeout: float | None = None) -> dict[str, Any]:
+    async def run(
+        self,
+        context: str,
+        *,
+        timeout: float | None = None,
+        geolocation: bool = False,
+    ) -> dict[str, Any]:
         wait_timeout = self.timeout if timeout is None else float(timeout)
         server = LoopbackProbeServer().start()
+        origin = f"http://127.0.0.1:{server.port}"
         try:
-            await self.client.navigate(context, server.url, wait="complete", timeout=wait_timeout)
+            await self.client.navigate(
+                context,
+                server.url,
+                wait="complete",
+                timeout=wait_timeout,
+            )
             page = await self._read_page(context, wait_timeout)
+            if geolocation:
+                page = dict(page)
+                page["geolocation"] = await self._run_geolocation(
+                    context, origin, wait_timeout
+                )
             http = server.snapshot()
             observations = {"http": http, "page": page,
                             "workers": page.get("workers", {}) if isinstance(page, Mapping) else {}}
@@ -392,6 +548,103 @@ class ProbeRunner:
             except Exception:
                 pass
             server.close()
+
+    async def _permission_state(self, context: str, timeout: float) -> Any:
+        return await self.client.evaluate(
+            context,
+            "navigator.permissions && navigator.permissions.query "
+            "? navigator.permissions.query({name: 'geolocation'}).then(p => p.state) "
+            ": 'unsupported'",
+            timeout=timeout,
+        )
+
+    async def _set_geolocation_permission(
+        self,
+        origin: str,
+        state: str,
+        timeout: float,
+    ) -> Any:
+        """Set one origin's permission in the default BiDi user context."""
+
+        return await self.client.send(
+            "permissions.setPermission",
+            {
+                "descriptor": {"name": "geolocation"},
+                "state": state,
+                "origin": origin,
+                "userContext": "default",
+            },
+            timeout=timeout,
+        )
+
+    async def _position(self, context: str, timeout: float) -> Any:
+        # A timeout prevents a denied or unsupported implementation from
+        # holding the entire qualification run open.
+        expression = """new Promise(resolve => {
+          if (!navigator.geolocation) { resolve({supported:false}); return; }
+          let done = false;
+          const finish = value => { if (!done) { done = true; resolve(value); } };
+          const timer = setTimeout(() => finish({ok:false, errorCode:3, error:'timeout'}), 2500);
+          navigator.geolocation.getCurrentPosition(
+            p => { clearTimeout(timer); finish({ok:true, latitude:p.coords.latitude,
+              longitude:p.coords.longitude, accuracy:p.coords.accuracy}); },
+            e => { clearTimeout(timer); finish({ok:false, errorCode:e.code, error:e.message || ''}); },
+            {maximumAge: 0, timeout: 2000}
+          );
+        })"""
+        return await self.client.evaluate(context, expression, timeout=timeout)
+
+    async def _run_geolocation(
+        self,
+        context: str,
+        origin: str,
+        timeout: float,
+    ) -> dict[str, Any]:
+        """Probe one loopback origin and restore its prior permission state."""
+
+        result: dict[str, Any] = {
+            "origin": origin,
+            "user_context": "default",
+            "worker_contexts": {
+                "dedicated": "notapplicable",
+                "shared": "notapplicable",
+                "service": "notapplicable",
+            },
+            "permission": "geolocation",
+        }
+        original: Any = None
+        try:
+            original = await self._permission_state(context, timeout)
+            result["original_state"] = original
+            result["original_query"] = {"name": "geolocation", "state": original}
+        except Exception as exc:
+            result["original_state"] = None
+            result["error"] = f"permission query failed: {exc}"
+
+        try:
+            if original not in {"prompt", "granted", "denied"}:
+                raise RuntimeError("original geolocation permission state is unavailable")
+            await self._set_geolocation_permission(origin, "granted", timeout)
+            result["granted_state"] = await self._permission_state(context, timeout)
+            result["granted_position"] = await self._position(context, timeout)
+            await self._set_geolocation_permission(origin, "denied", timeout)
+            result["denied_state"] = await self._permission_state(context, timeout)
+            result["denied_position"] = await self._position(context, timeout)
+        except Exception as exc:
+            result["error"] = str(exc)
+        finally:
+            if original in {"prompt", "granted", "denied"}:
+                try:
+                    await self._set_geolocation_permission(origin, original, timeout)
+                    result["restored_state"] = await self._permission_state(context, timeout)
+                    result["restored_query"] = {
+                        "name": "geolocation", "state": result["restored_state"]
+                    }
+                except Exception as exc:
+                    result["restore_error"] = str(exc)
+            else:
+                result["restore_error"] = "original permission state was not known"
+        return result
 
     async def _read_page(self, context: str, timeout: float) -> dict[str, Any]:
         deadline = asyncio.get_running_loop().time() + timeout

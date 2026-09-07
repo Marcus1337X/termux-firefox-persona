@@ -134,6 +134,7 @@ class ProbeTests(unittest.TestCase):
     def test_page_probe_has_graphics_diagnostic_and_cleanup(self) -> None:
         self.assertIn("webglcontextcreationerror", PROBE_HTML)
         self.assertIn("__tbpProbeCleanup", PROBE_HTML)
+        self.assertIn("contrast", PROBE_HTML)
 
     def test_loopback_server_records_document_and_worker_headers(self) -> None:
         with LoopbackProbeServer() as server:
@@ -172,6 +173,39 @@ class ProbeTests(unittest.TestCase):
         self.assertIn("raw", result)
         self.assertIn("checks", result)
         self.assertEqual(result["checks"]["window"]["status"], "pass")
+
+    def test_optional_geolocation_grants_denies_and_restores_origin(self) -> None:
+        class GeoClient:
+            def __init__(self):
+                self.states = iter(("prompt", "granted", "denied", "prompt"))
+                self.positions = iter((
+                    {"ok": True, "latitude": 31.2304, "longitude": 121.4737, "accuracy": 50},
+                    {"ok": False, "errorCode": 1},
+                ))
+                self.commands = []
+
+            async def evaluate(self, _context, expression, **_kwargs):
+                if "permissions.query" in expression:
+                    return next(self.states)
+                if "getCurrentPosition" in expression:
+                    return next(self.positions)
+                return True
+
+            async def send(self, method, params, **_kwargs):
+                self.commands.append((method, params))
+                return {}
+
+        client = GeoClient()
+        result = asyncio.run(ProbeRunner(client)._run_geolocation(
+            "ctx", "http://127.0.0.1:34567", 0.2
+        ))
+        self.assertEqual(result["original_state"], "prompt")
+        self.assertEqual(result["denied_position"]["errorCode"], 1)
+        self.assertEqual(result["restored_state"], "prompt")
+        self.assertEqual(len(client.commands), 3)
+        self.assertEqual(client.commands[0][1]["origin"], "http://127.0.0.1:34567")
+        self.assertEqual(client.commands[-1][1]["state"], "prompt")
+        self.assertEqual(result["worker_contexts"]["service"], "notapplicable")
 
 
 if __name__ == "__main__":

@@ -53,6 +53,35 @@ python cli.py persona start PERSONA_ID
 - 2 或 4 个可见并发线程。
 - 当前 Firefox 原生 Linux 桌面身份，UA 版本关联实际构建。
 
+新增 `linux-firefox-region-appearance-v1`，包含中文/上海与英文/纽约各自的明暗外观，共四个组合：
+
+- 上海位置 `31.2304, 121.4737`，纽约位置 `40.7128, -74.0060`，精度均为 50 米。
+- 明色变体使用普通动画，暗色变体使用减少动画；这是预设选择，两者没有普遍的必然关系。
+- 对比度为 `no-preference`，不启用 `forced-colors`。
+- 地理位置在初始空白页应用到实例的默认 user context，后续标签页和派生窗口继承。网站仍需取得原生定位授权。
+
+在当前设备验证并使用新模板：
+
+```sh
+python cli.py persona bootstrap --template linux-firefox-region-appearance-v1
+python cli.py persona create --template linux-firefox-region-appearance-v1 --start
+```
+
+定位探针只为自己的临时 loopback origin 授权，检查返回坐标与精度，再拒绝授权检查错误，最后恢复原权限状态。它不会给访问的网站自动授予定位权限。实现使用 [WebDriver BiDi 的地理位置与权限命令](https://w3c.github.io/webdriver-bidi/)，失败或权限未恢复的组合不能获资格。Geolocation 与这些外观媒体查询不属于 Worker API，报告明确列为不适用。
+
+旧基础模板保持原来的验证范围；未指定 `--template` 时，默认池可以抽到当前环境中任一合格模板。
+
+`linux-firefox-software-glx-v1` 在相同的四个地区外观组合上使用软件 GLX 路径。当前设备的 EGL 初始化失败，而 GLX 能创建 Mesa llvmpipe 上下文；此模板明确请求软件渲染，不能与 `--backend native` 混用。
+
+```sh
+python cli.py persona bootstrap --template linux-firefox-software-glx-v1
+python cli.py persona create --template linux-firefox-software-glx-v1 --start
+```
+
+它额外要求 Window 中的 WebGL1/2 通过 shader 编译、程序链接、红色三角形像素读回及 RGBA8 framebuffer 绿色像素读回。报告保留 precision、limits 与 extensions 的观测，但这些查询不代表全部精度、边界或扩展行为均已验收。Worker WebGL 和完整核显兼容仍未验证。
+
+`python -m tests.persona_graphics_live` 可串行比较默认、强制 GLX、强制 EGL 三种路径，结果保存在私有 `~/.tbp/graphics-diagnostics`。诊断脚本不会授予模板资格。
+
 资格报告只覆盖模板列出的必需能力；外观、输入、Canvas 和 Audio 的额外观测不等于完整第二批验收。核显模板仍是候选；只修改 renderer 名称不能获得核显资格。`software` 为默认执行后端，`native` 仅表示不强制软件渲染，不能自动等同于手机 GPU 加速。
 
 配置、资格、profile 和日志默认存于 Termux 私有目录 `~/.tbp/personas`。`--root` 可指定另一个私有测试目录，放在子命令之前。共享存储不能用作 profile 根目录。Firefox/后端/字体环境变化会使原资格失效，不会静默修改已保存身份。
@@ -82,5 +111,7 @@ python -m compileall -q src cli.py
 ```
 
 完成本机 `bootstrap` 后可运行 `python -m tests.persona_live`，验证原生输入、截图、双实例隔离和恢复。它会创建两套私有测试身份，结果保存在 `~/.tbp/personas/live-acceptance.json`，不加入 CI。测试结束会停止测试实例。
+
+使用 `python -m tests.persona_live --template linux-firefox-region-appearance-v1` 可专门验收新模板，额外检查重启后的定位资格与权限状态。
 
 GitHub Actions 在 Python 3.10 和 3.14 上运行这些逻辑检查。`tests/test_*.py` 是上游手动浏览器测试，不纳入无 GUI 的单元测试发现范围。Termux 实机记录见 `docs/DEVELOPMENT.md`。

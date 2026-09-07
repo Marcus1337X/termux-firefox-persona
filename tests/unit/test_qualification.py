@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import unittest
+from dataclasses import replace
 
 from src.persona import (
     CapabilitySnapshot,
@@ -122,6 +123,125 @@ class QualificationTests(unittest.TestCase):
         self.assertFalse(report.passed)
         graphics = next(item for item in report.evidence if item.capability == "graphics_full_combination")
         self.assertEqual(graphics.status, "unsupported")
+
+    def _appearance_geo_persona(self):
+        base_config = copy.deepcopy(self.template.base_config)
+        base_config["appearance"] = {
+            "color_scheme": "light", "reduced_motion": False,
+            "contrast": "no-preference", "forced_colors": False,
+        }
+        base_config["geolocation"] = {
+            "latitude": 31.2304, "longitude": 121.4737,
+            "accuracy": 50, "permission": "prompt",
+        }
+        template = replace(
+            self.template,
+            base_config=base_config,
+            required_capabilities=self.template.required_capabilities + (
+                "appearance_window", "geolocation_window",
+            ),
+        )
+        config = template.expand(0, "154.0.1")
+        persona = Persona.build(
+            seed=11, template=template, final_config=config,
+            snapshot=self.snapshot, experimental=True,
+        )
+        return template, config, persona
+
+    def test_appearance_and_geolocation_require_window_evidence(self) -> None:
+        template, config, persona = self._appearance_geo_persona()
+        probe = self._report()
+        probe["observations"]["page"]["appearance"] = {
+            "colorScheme": "light", "reducedMotion": False,
+            "contrast": "no-preference", "forcedColors": False,
+        }
+        probe["observations"]["page"]["geolocation"] = {
+            "origin": "http://127.0.0.1:12345", "original_state": "prompt",
+            "granted_state": "granted",
+            "granted_position": {"ok": True, "latitude": 31.2304,
+                                  "longitude": 121.4737, "accuracy": 50},
+            "denied_state": "denied",
+            "denied_position": {"ok": False, "errorCode": 1},
+            "restored_state": "prompt",
+            "worker_contexts": {"dedicated": "notapplicable", "shared": "notapplicable", "service": "notapplicable"},
+        }
+        report = qualify_probe(
+            persona, self.snapshot, probe,
+            catalog=TemplateCatalog([template]),
+        )
+        self.assertTrue(report.passed)
+        self.assertEqual(
+            next(item for item in report.evidence if item.capability == "geolocation_window").contexts[1:],
+            ("dedicated:notapplicable", "shared:notapplicable", "service:notapplicable"),
+        )
+
+    def test_geolocation_restore_or_appearance_mismatch_is_partial(self) -> None:
+        template, config, persona = self._appearance_geo_persona()
+        probe = self._report()
+        probe["observations"]["page"]["appearance"] = {
+            "colorScheme": "dark", "reducedMotion": False,
+            "contrast": "no-preference", "forcedColors": False,
+        }
+        probe["observations"]["page"]["geolocation"] = {
+            "original_state": "prompt", "granted_state": "granted",
+            "granted_position": {"ok": True, "latitude": 31.2304,
+                                  "longitude": 121.4737, "accuracy": 50},
+            "denied_state": "denied", "denied_position": {"ok": False, "errorCode": 1},
+            "restored_state": "granted", "worker_contexts": {
+                "dedicated": "notapplicable", "shared": "notapplicable", "service": "notapplicable",
+            },
+        }
+        report = qualify_probe(persona, self.snapshot, probe, catalog=TemplateCatalog([template]))
+        self.assertFalse(report.passed)
+        statuses = {item.capability: item.status for item in report.evidence}
+        self.assertEqual(statuses["appearance_window"], "partial")
+        self.assertEqual(statuses["geolocation_window"], "partial")
+
+    def test_webgl_window_requires_both_context_behavior_reports(self) -> None:
+        base_config = copy.deepcopy(self.template.base_config)
+        base_config["graphics"].update({
+            "context_backend": "glx", "execution_backend": "software",
+            "vendor": "Mesa", "renderer": "llvmpipe, or similar",
+            "webgl1": True, "webgl2": True,
+        })
+        template = replace(
+            self.template, base_config=base_config,
+            required_capabilities=self.template.required_capabilities + ("webgl_window",),
+        )
+        config = template.expand(0, "154.0.1")
+        persona = Persona.build(seed=12, template=template, final_config=config,
+                                snapshot=self.snapshot, experimental=True)
+        probe = self._report()
+        behavior = {
+            "passed": True, "compile": True, "link": True,
+            "errors": [],
+            "triangle": {"compile": True, "link": True, "nonEmpty": True,
+                          "readback": True, "exactRed": True,
+                          "rgba": [255, 0, 0, 255]},
+            "framebuffer": {"rgba8": True, "complete": True, "readback": True,
+                            "exactGreen": True, "rgba": [0, 255, 0, 255]},
+        }
+        probe["observations"]["page"]["webgl"] = {
+            "supported": True, "unmaskedVendor": "Mesa",
+            "unmaskedRenderer": "llvmpipe (LLVM 18.1.8, 256 bits)",
+            "webgl1": {"supported": True, "unmaskedVendor": "Mesa",
+                       "unmaskedRenderer": "llvmpipe (LLVM 18.1.8, 256 bits)",
+                       "behavior": behavior},
+            "webgl2": {"supported": True, "unmaskedVendor": "Mesa",
+                       "unmaskedRenderer": "llvmpipe (LLVM 18.1.8, 256 bits)",
+                       "behavior": behavior},
+            "behavior": {"webgl1": behavior, "webgl2": behavior},
+        }
+        report = qualify_probe(persona, self.snapshot, probe, catalog=TemplateCatalog([template]))
+        self.assertTrue(report.passed)
+
+        broken = copy.deepcopy(probe)
+        broken["observations"]["page"]["webgl"]["webgl2"]["behavior"]["triangle"]["rgba"] = [255, 255, 255, 255]
+        broken["observations"]["page"]["webgl"]["behavior"]["webgl2"] = broken["observations"]["page"]["webgl"]["webgl2"]["behavior"]
+        failed = qualify_probe(persona, self.snapshot, broken, catalog=TemplateCatalog([template]))
+        self.assertFalse(failed.passed)
+        webgl = next(item for item in failed.evidence if item.capability == "webgl_window")
+        self.assertEqual(webgl.status, "partial")
 
 
 if __name__ == "__main__":

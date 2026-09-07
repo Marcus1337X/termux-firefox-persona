@@ -51,7 +51,31 @@ def firefox_settings(config: dict) -> tuple[dict, dict]:
         "ui.prefersReducedMotion": int(appearance.get("reduced_motion", False)),
         "browser.theme.content-theme": 0 if appearance.get("color_scheme") == "dark" else 1,
     }
+    if "contrast" in appearance:
+        # The region/appearance preset explicitly requests ordinary document
+        # colors. Firefox derives both contrast and forced-colors from this
+        # native preference policy; qualification checks its actual queries.
+        prefs["browser.display.document_color_use"] = 1
+        prefs["ui.useAccessibilityTheme"] = 0
+    if config.get("graphics", {}).get("context_backend") == "glx":
+        # The explicit software-GLX preset avoids this device's failing EGL
+        # display path. Existing presets retain their original GL policy.
+        prefs["gfx.x11-egl.force-disabled"] = True
     return prefs, env
+
+
+async def apply_browser_overrides(bidi, config: dict) -> dict:
+    """Install identity before any target navigation; leave site consent intact."""
+    applied = {}
+    geolocation = config.get("geolocation")
+    if geolocation is not None:
+        coordinates = {name: geolocation[name] for name in ("latitude", "longitude", "accuracy")}
+        await bidi.send("emulation.setGeolocationOverride", {
+            "coordinates": coordinates, "userContexts": ["default"],
+        })
+        applied["geolocation"] = {"coordinates": coordinates, "scope": "user-context:default",
+                                  "permission_policy": "native-site-consent"}
+    return applied
 
 
 class PersonaRuntime:
@@ -86,7 +110,8 @@ class PersonaRuntime:
                           **extra)
         atomic_json(self.paths["state"], self.state)
 
-    async def _display(self, leases: ExitStack) -> str:
+    @staticmethod
+    async def _display(leases: ExitStack) -> str:
         lock_dir = Path(tempfile.gettempdir()) / "tbp-persona-displays"
         lock_dir.mkdir(mode=0o700, exist_ok=True)
         numbers = list(range(200, 800))
@@ -121,6 +146,8 @@ class PersonaRuntime:
                 self.persist("starting", display=display)
                 self.paths["profile"].mkdir(mode=0o700, exist_ok=True)
                 config = dict(self.persona.final_config)
+                if config.get("graphics", {}).get("context_backend") == "glx" and self.manager.backend != "software":
+                    raise ValueError("The software GLX preset requires the software execution backend")
                 prefs, env = firefox_settings(config)
                 self.pilot = Pilot(
                     browser="firefox", display=display,
@@ -147,6 +174,8 @@ class PersonaRuntime:
                 await boot
                 self.persist("starting")
                 self.bidi = await BiDiClient(ws_url=self.pilot._session.bidi_url).connect()
+                overrides = await apply_browser_overrides(self.bidi, config)
+                self.persist("starting", browser_overrides=overrides)
                 tree = await self.bidi.get_tree()
                 if not tree.get("contexts"):
                     raise RuntimeError("Firefox has no browser context")
@@ -271,6 +300,7 @@ class PersonaRuntime:
                     "experimental": self.persona.experimental, "uptime": time.time() - self.started_at}
         if action == "diagnostics":
             return {"usage": process_usage(), "backend": self.manager.backend,
+                    "graphics_policy": self.persona.final_config.get("graphics", {}).get("context_backend", "default"),
                     "firefox_log": list(self.pilot._session.firefox_log)[-100:]}
         if action == "shutdown":
             # Let the current response reach the socket before cleanup.
@@ -309,7 +339,8 @@ class PersonaRuntime:
             probe_context = created["context"]
             try:
                 await self.select_context(probe_context)
-                return await ProbeRunner(self.bidi, timeout=15).run(probe_context)
+                return await ProbeRunner(self.bidi, timeout=15).run(
+                    probe_context, geolocation="geolocation" in self.persona.final_config)
             finally:
                 await self.bidi.send("browsingContext.close", {"context": probe_context})
                 await self.select_context(original)

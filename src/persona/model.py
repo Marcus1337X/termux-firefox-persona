@@ -141,6 +141,51 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
     if header_languages != [item.lower() for item in languages]:
         fail("accept_language sequence must match languages")
 
+    appearance = config.get("appearance")
+    if appearance is not None:
+        if not isinstance(appearance, Mapping):
+            fail("appearance must be an object")
+        if appearance.get("color_scheme") not in ("light", "dark"):
+            fail("appearance.color_scheme must be light or dark")
+        if appearance.get("contrast", "no-preference") not in ("no-preference", "more", "less", "custom"):
+            fail("appearance.contrast is invalid")
+        for name in ("reduced_motion", "forced_colors"):
+            if type(appearance.get(name)) is not bool:
+                fail(f"appearance.{name} must be a boolean")
+    geolocation = config.get("geolocation")
+    if geolocation is not None:
+        if not isinstance(geolocation, Mapping):
+            fail("geolocation must be an object")
+        for name, minimum, maximum in (("latitude", -90, 90), ("longitude", -180, 180),
+                                       ("accuracy", 0, 100000)):
+            value = geolocation.get(name)
+            if type(value) not in (int, float) or not math.isfinite(value) or not minimum <= value <= maximum:
+                fail(f"geolocation.{name} must be finite and within {minimum}..{maximum}")
+        if geolocation.get("permission") not in ("prompt", "granted", "denied"):
+            fail("geolocation.permission is invalid")
+    # Region relationships belong to this finite preset family, not to every
+    # multilingual desktop. Other families can define different relationships.
+    if template_id in {"linux-firefox-region-appearance-v1", "linux-firefox-software-glx-v1"}:
+        regions = {"zh-CN": ("Asia/Shanghai", 31.2304, 121.4737),
+                   "en-US": ("America/New_York", 40.7128, -74.0060)}
+        expected = regions.get(locale["locale"])
+        if (expected is None or geolocation is None or appearance is None
+                or (locale["timezone"], geolocation["latitude"], geolocation["longitude"]) != expected):
+            fail("geolocation and timezone must match this preset's locale region")
+        if "contrast" not in appearance:
+            fail("regional appearance requires an explicit contrast preference")
+    if template_id == "linux-firefox-software-glx-v1":
+        graphics = config.get("graphics")
+        expected_graphics = {
+            "identity_class": "native-linux-firefox", "hardware_class": "software",
+            "execution_backend": "software", "context_backend": "glx", "vendor": "Mesa",
+            "renderer": "llvmpipe, or similar", "webgl1": True, "webgl2": True,
+        }
+        if (not isinstance(graphics, Mapping)
+                or any(graphics.get(name) != value or type(graphics.get(name)) is not type(value)
+                       for name, value in expected_graphics.items())):
+            fail("software GLX graphics must match the measured Mesa software identity")
+
 
 def _matches_template(template: "PersonaTemplate", config: Mapping[str, Any],
                       runtime_version: str | None = None) -> bool:

@@ -416,6 +416,187 @@ def qualify_probe(
         if not locale_ok:
             diagnostic_reasons.append("locale, timezone or first HTTP headers do not match")
 
+    if "appearance_window" in template.required_capabilities:
+        appearance = _mapping(final_config.get("appearance"))
+        observed_appearance = _mapping(page.get("appearance"))
+        requested_appearance = {
+            "color_scheme": appearance.get("color_scheme"),
+            "reduced_motion": appearance.get("reduced_motion"),
+            "contrast": appearance.get("contrast"),
+            "forced_colors": appearance.get("forced_colors"),
+        }
+        observed_appearance_values = {
+            "color_scheme": observed_appearance.get("colorScheme", observed_appearance.get("color_scheme")),
+            "reduced_motion": observed_appearance.get("reducedMotion", observed_appearance.get("reduced_motion")),
+            "contrast": observed_appearance.get("contrast"),
+            "forced_colors": observed_appearance.get("forcedColors", observed_appearance.get("forced_colors")),
+        }
+        appearance_ok = all(
+            requested_appearance[key] is not None
+            and observed_appearance_values[key] is not None
+            and requested_appearance[key] == observed_appearance_values[key]
+            for key in requested_appearance
+        )
+        evidence.append(_evidence(
+            "appearance_window", _status(appearance_ok), snapshot_obj,
+            requested_appearance,
+            {**observed_appearance_values, "workers": "notapplicable"},
+            ("window", "dedicated:notapplicable", "shared:notapplicable", "service:notapplicable"),
+            tuple(f"observations.page.appearance.{key}" for key in observed_appearance_values),
+        ))
+        if not appearance_ok:
+            diagnostic_reasons.append("appearance values are missing or do not match")
+
+    if "geolocation_window" in template.required_capabilities:
+        requested_geo = _mapping(final_config.get("geolocation", final_config.get("geo")))
+        observed_geo = _mapping(page.get("geolocation"))
+        expected_position = {
+            "latitude": requested_geo.get("latitude"),
+            "longitude": requested_geo.get("longitude"),
+            "accuracy": requested_geo.get("accuracy"),
+        }
+        granted_position = _mapping(observed_geo.get("granted_position"))
+        denied_position = _mapping(observed_geo.get("denied_position"))
+
+        def close_number(left: Any, right: Any, tolerance: float) -> bool:
+            lhs, rhs = _as_number(left), _as_number(right)
+            return lhs is not None and rhs is not None and abs(lhs - rhs) <= tolerance
+
+        geo_ok = (
+            bool(requested_geo)
+            and requested_geo.get("permission") == "prompt"
+            and observed_geo.get("original_state") == "prompt"
+            and observed_geo.get("granted_state") == "granted"
+            and granted_position.get("ok") is True
+            and close_number(granted_position.get("latitude"), expected_position.get("latitude"), 1e-5)
+            and close_number(granted_position.get("longitude"), expected_position.get("longitude"), 1e-5)
+            and close_number(granted_position.get("accuracy"), expected_position.get("accuracy"), 1e-5)
+            and observed_geo.get("denied_state") == "denied"
+            and denied_position.get("ok") is False
+            and denied_position.get("errorCode") == 1
+            and observed_geo.get("restored_state") == observed_geo.get("original_state")
+            and not observed_geo.get("error")
+            and not observed_geo.get("restore_error")
+        )
+        observed_geo_values = _copy(dict(observed_geo))
+        worker_contexts = observed_geo_values.setdefault("worker_contexts", {})
+        if not isinstance(worker_contexts, Mapping):
+            worker_contexts = {}
+            observed_geo_values["worker_contexts"] = worker_contexts
+        for realm in _REALMS[1:]:
+            worker_contexts.setdefault(realm, "notapplicable")
+        evidence.append(_evidence(
+            "geolocation_window", _status(geo_ok), snapshot_obj,
+            {**expected_position, "permission": requested_geo.get("permission")},
+            observed_geo_values,
+            ("window", "dedicated:notapplicable", "shared:notapplicable", "service:notapplicable"),
+            (
+                "observations.page.geolocation.original_state",
+                "observations.page.geolocation.granted_position",
+                "observations.page.geolocation.denied_position",
+                "observations.page.geolocation.restored_state",
+                "observations.page.geolocation.worker_contexts=notapplicable",
+            ),
+        ))
+        if not geo_ok:
+            diagnostic_reasons.append("geolocation grant/deny/restore or position does not match")
+
+    if "webgl_window" in template.required_capabilities:
+        graphics = _mapping(final_config.get("graphics"))
+        webgl = _mapping(page.get("webgl"))
+        webgl1 = _mapping(webgl.get("webgl1"))
+        webgl2 = _mapping(webgl.get("webgl2"))
+        behavior = _mapping(webgl.get("behavior"))
+        behavior1 = _mapping(behavior.get("webgl1", webgl1.get("behavior")))
+        behavior2 = _mapping(behavior.get("webgl2", webgl2.get("behavior")))
+        observed_vendor = webgl.get("unmaskedVendor") or webgl.get("vendor")
+        observed_renderer = webgl.get("unmaskedRenderer") or webgl.get("renderer")
+
+        def graphics_match(expected: Any, observed: Any) -> bool:
+            if not isinstance(expected, str) or not isinstance(observed, str):
+                return False
+            lhs, rhs = expected.strip().lower(), observed.strip().lower()
+            if lhs == "llvmpipe, or similar":
+                return "llvmpipe" in rhs
+            if lhs == "mesa":
+                return rhs == "mesa" or rhs.startswith("mesa ")
+            return lhs == rhs
+
+        def context_identity(context: Mapping[str, Any]) -> tuple[Any, Any]:
+            return (
+                context.get("unmaskedVendor") or context.get("vendor"),
+                context.get("unmaskedRenderer") or context.get("renderer"),
+            )
+
+        def rgba(value: Any, expected: list[int]) -> bool:
+            return isinstance(value, Sequence) and not isinstance(value, (str, bytes)) \
+                and list(value) == expected
+
+        def behavior_complete(value: Mapping[str, Any]) -> bool:
+            triangle = _mapping(value.get("triangle"))
+            framebuffer = _mapping(value.get("framebuffer"))
+            errors = value.get("errors")
+            return (
+                value.get("compile") is True
+                and value.get("link") is True
+                and value.get("passed") is True
+                and isinstance(errors, Sequence) and not isinstance(errors, (str, bytes))
+                and len(errors) == 0
+                and triangle.get("compile") is True
+                and triangle.get("link") is True
+                and triangle.get("nonEmpty") is True
+                and triangle.get("readback") is True
+                and triangle.get("exactRed") is True
+                and rgba(triangle.get("rgba"), [255, 0, 0, 255])
+                and framebuffer.get("rgba8") is True
+                and framebuffer.get("complete") is True
+                and framebuffer.get("readback") is True
+                and framebuffer.get("exactGreen") is True
+                and rgba(framebuffer.get("rgba"), [0, 255, 0, 255])
+            )
+
+        webgl1_vendor, webgl1_renderer = context_identity(webgl1)
+        webgl2_vendor, webgl2_renderer = context_identity(webgl2)
+
+        graphics_ok = (
+            graphics_match(graphics.get("vendor"), observed_vendor)
+            and graphics_match(graphics.get("renderer"), observed_renderer)
+            and graphics_match(graphics.get("vendor"), webgl1_vendor)
+            and graphics_match(graphics.get("renderer"), webgl1_renderer)
+            and graphics_match(graphics.get("vendor"), webgl2_vendor)
+            and graphics_match(graphics.get("renderer"), webgl2_renderer)
+            and bool(graphics.get("webgl1"))
+            and bool(graphics.get("webgl2"))
+            and webgl1.get("supported") is True
+            and webgl2.get("supported") is True
+            and behavior_complete(behavior1)
+            and behavior_complete(behavior2)
+        )
+        observed_graphics = {
+            "vendor": observed_vendor,
+            "renderer": observed_renderer,
+            "webgl1": {"supported": webgl1.get("supported"), "vendor": webgl1_vendor,
+                       "renderer": webgl1_renderer, "behavior": behavior1},
+            "webgl2": {"supported": webgl2.get("supported"), "vendor": webgl2_vendor,
+                       "renderer": webgl2_renderer, "behavior": behavior2},
+            "worker_webgl": "not_verified",
+            "raw": webgl,
+        }
+        evidence.append(_evidence(
+            "webgl_window", _status(graphics_ok), snapshot_obj,
+            graphics, observed_graphics,
+            ("window",),
+            (
+                "observations.page.webgl.unmaskedVendor",
+                "observations.page.webgl.unmaskedRenderer",
+                "observations.page.webgl.webgl1.behavior",
+                "observations.page.webgl.webgl2.behavior",
+                "observations.page.webgl.worker_webgl=not_verified",
+            ),
+        ))
+        if not graphics_ok:
+            diagnostic_reasons.append("WebGL1/WebGL2 context, shader, draw or framebuffer behavior does not match")
+
     if "graphics_full_combination" in template.required_capabilities:
         graphics = _mapping(final_config.get("graphics"))
         webgl = _mapping(page.get("webgl"))

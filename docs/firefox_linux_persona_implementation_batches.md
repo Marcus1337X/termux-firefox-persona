@@ -1,13 +1,14 @@
 # Firefox Linux Persona 分批实现清单
 
-## 当前进度（2026-09-07）
+## 本轮进度更新（2026-09-07）
 
-基础真实后端模板的 8/8 个组合已在 K60 至尊版通过串行 bootstrap 资格验证；这不表示核显模板或全部批次完成。本地 59 项单元测试通过，GitHub Actions 的 Python 3.10 与 3.14 检查均通过。已实测原生输入、点击、私有截图、标签页继承与刷新；两个不同 DISPLAY 的实例可分别导航和输入，localStorage 与持久 cookie 隔离，停止 A 后 B 继续运行，重启 A 保持 Persona 身份与上述持久数据。六组实机验收均通过；双实例运行时应用进程数为 30，测试前后均为 6。
+本轮本地 79 项单元测试通过。地区/外观模板 4/4、软件 GLX 模板 4/4 已完成实机 bootstrap；此前基础模板 8/8 仍有效，当前共有 16 个合格组合。地区/外观八组实机验收全部通过，包括重启后位置与 prompt 权限保持、真实点击触发脚本弹窗、Ctrl+N 新窗口继承和主窗口联动退出。标签页拖出尚未验收，包含该行为的综合条目仍未完成。
 
-普通派生新窗口继承与主窗口关闭联动退出已通过实机验收；脚本弹窗及拖出标签页尚未验证，包含这些行为的组合条目保持未勾选。地理位置、字体、完整外观、图形/音频/媒体、权限及网络仍按未完成项推进。WebGL 创建失败，记录到 `FEATURE_FAILURE_NO_DISPLAY` / `EXHAUSTED_DRIVERS`；核显候选未验证。私有仓库已验证 push/pull，实现提交 710f18e 的 Actions 已通过。
+软件 GLX 路径已实际验证 WebGL1/2 shader 编译及链接、整幅红色 RGBA 输出和 RGBA8 framebuffer 绿色 RGBA 输出。该路径使用真实 Mesa llvmpipe 软件后端，不是核显身份模板。precision、limits 和 extensions 目前主要为查询结果，未完成全部功能行为验收；Worker/OffscreenCanvas WebGL 尚未验证。软件 GLX 的八组生命周期验收也已全部通过；双实例运行时应用进程数为 30，测试实例均已停止。
+
+地理位置及四项外观媒体查询已具备当前模板范围内的实机证据；字体功能尚未实现，完整第一批和第二批仍未完成。本轮 CI 尚未执行，此前 CI 通过不能作为本轮结果。
 
 下列勾选仅表示相应明确子项已有证据；包含多项行为的条目，在全部验证前保持未勾选。环境变更后的旧 Persona 会明确拒绝恢复，本轮尚未提供保留原身份的重新资格流程；不会静默更新其配置。
-
 
 > 目标：在 Android Termux + Termux:X11/Xvfb 中，为每个独立的 Firefox 顶层窗口创建一套经过约束的 Linux Firefox Persona。Persona 来自预先定义的合理模板，并在模板约束内随机组合；它不是允许用户逐字段填写的任意伪装配置。
 
@@ -163,17 +164,17 @@ instance_id
 
 ## 地理位置
 
-- [ ] latitude
-- [ ] longitude
-- [ ] accuracy
+- [x] latitude
+- [x] longitude
+- [x] accuracy
 - [ ] 验证 geolocation 权限、返回值和 timezone/locale 的关系；没有真实权限链路时标记 `partial`。
 
 ## 外观
 
-- [ ] `prefers-color-scheme`
-- [ ] `prefers-reduced-motion`
-- [ ] `prefers-contrast`
-- [ ] `forced-colors`
+- [x] `prefers-color-scheme`
+- [x] `prefers-reduced-motion`
+- [x] `prefers-contrast`
+- [x] `forced-colors`
 - [ ] 验证媒体查询结果与 Firefox profile、X11 外观和模板设定的一致性。
 
 ## 字体
@@ -203,9 +204,9 @@ instance_id
 
 ## WebGL / GPU
 
-- [ ] WebGL vendor
-- [ ] WebGL renderer
-- [ ] WebGL2 availability
+- [x] WebGL vendor
+- [x] WebGL renderer
+- [x] WebGL2 availability
 - [ ] WebGL extensions
 - [ ] `MAX_TEXTURE_SIZE`
 - [ ] `MAX_CUBE_MAP_TEXTURE_SIZE`
@@ -390,7 +391,7 @@ instance_id
 - [x] `candidate`、`partial` 和 `unsupported` 不会被默认严格随机池静默使用；实验入口会明确显示限制。
 - [x] 可以在同一个 Termux 环境中同时运行多个独立 Firefox 顶层窗口，并分别应用不同 Persona。
 - [x] 同一 Firefox 窗口内新建标签页后继续继承该窗口 Persona，不能被当成新的 Persona。
-- [ ] Popup 和普通新窗口按约定继承源 Persona；管理器显式创建的新实例才分配新 Persona。
+- [x] Popup 和普通新窗口按约定继承源 Persona；管理器显式创建的新实例才分配新 Persona。
 - [x] 关闭一个拥有派生窗口/实例的主窗口时，其派生窗口/实例随该 Persona 结束；其他 Persona 继续运行。
 - [ ] Window A 与 Window B 之间切换、刷新、导航或新建标签页时，不发生 Persona、输入、profile 或状态串用。
 - [x] 关闭一个 Persona 的窗口不影响其他 Persona 的运行状态；同 Persona 派生窗口遵循前述主窗口关闭规则。

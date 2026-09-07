@@ -131,7 +131,34 @@ class InputCommands:
         await self.session.send("Input.insertText", {"text": text, "mode": mode})
 
     async def press_key(self, key, modifiers=0):
-        """Press a special key (Enter, Tab, Escape, etc.)."""
+        """Press a key or a modifier chord, e.g. ``Ctrl+Shift+n``.
+
+        Explicit CDP modifier bits (Alt=1, Control=2, Meta=4, Shift=8)
+        combine with modifiers named in the chord.
+        """
+        if type(modifiers) is not int or not 0 <= modifiers <= 15:
+            raise ValueError("modifiers must be a CDP bitmask from 0 to 15")
+        if not isinstance(key, str) or not key:
+            raise ValueError("key must be a non-empty string")
+        aliases = {"ctrl": 2, "control": 2, "alt": 1, "option": 1,
+                   "shift": 8, "meta": 4, "cmd": 4, "command": 4,
+                   "super": 4, "win": 4}
+        chord = len(key) > 1 and "+" in key
+        if chord:
+            parts = [part.strip() for part in key.split("+")]
+            if any(not part for part in parts):
+                raise ValueError("Invalid key combination: each modifier and final key is required")
+            named_modifiers = 0
+            for part in parts[:-1]:
+                bit = aliases.get(part.lower())
+                if bit is None or named_modifiers & bit:
+                    raise ValueError(f"Invalid or duplicate modifier: {part}")
+                named_modifiers |= bit
+            modifiers |= named_modifiers
+            key = parts[-1]
+        elif len(key) > 1:
+            key = key.strip()
+
         key_map = {
             "Enter": {"key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13},
             "Tab": {"key": "Tab", "code": "Tab", "windowsVirtualKeyCode": 9},
@@ -142,9 +169,40 @@ class InputCommands:
             "ArrowLeft": {"key": "ArrowLeft", "code": "ArrowLeft", "windowsVirtualKeyCode": 37},
             "ArrowRight": {"key": "ArrowRight", "code": "ArrowRight", "windowsVirtualKeyCode": 39},
             "Space": {"key": " ", "code": "Space", "windowsVirtualKeyCode": 32},
+            "Delete": {"key": "Delete", "code": "Delete", "windowsVirtualKeyCode": 46},
+            "Home": {"key": "Home", "code": "Home", "windowsVirtualKeyCode": 36},
+            "End": {"key": "End", "code": "End", "windowsVirtualKeyCode": 35},
+            "PageUp": {"key": "PageUp", "code": "PageUp", "windowsVirtualKeyCode": 33},
+            "PageDown": {"key": "PageDown", "code": "PageDown", "windowsVirtualKeyCode": 34},
         }
 
-        info = key_map.get(key, {"key": key, "code": key, "windowsVirtualKeyCode": 0})
+        canonical = {name.lower(): name for name in key_map}
+        canonical.update({"esc": "Escape", "return": "Enter", "spacebar": "Space"})
+        if key.lower() in canonical:
+            info = key_map[canonical[key.lower()]]
+        elif len(key) == 1 and key.isprintable():
+            if key.isascii() and key.isalpha():
+                # Ctrl+N conventionally names the physical N key; Shift is
+                # represented by its own bit, not by capitalization in chords.
+                letter = key.upper()
+                event_key = (letter if modifiers & 8 else key.lower()) if chord else key
+                info = {"key": event_key, "code": "Key" + letter,
+                        "windowsVirtualKeyCode": ord(letter)}
+            elif key.isascii() and key.isdigit():
+                info = {"key": key, "code": "Digit" + key,
+                        "windowsVirtualKeyCode": ord(key)}
+            else:
+                punctuation = {" ": ("Space", 32), "+": ("Equal", 187),
+                               "=": ("Equal", 187), "-": ("Minus", 189),
+                               ",": ("Comma", 188), ".": ("Period", 190),
+                               "/": ("Slash", 191), ";": ("Semicolon", 186),
+                               "'": ("Quote", 222), "[": ("BracketLeft", 219),
+                               "]": ("BracketRight", 221), "\\": ("Backslash", 220),
+                               "`": ("Backquote", 192)}
+                code, virtual_key = punctuation.get(key, ("", 0))
+                info = {"key": key, "code": code, "windowsVirtualKeyCode": virtual_key}
+        else:
+            raise ValueError(f"Unsupported key: {key!r}; use a single character or a named special key")
         await self.session.send("Input.dispatchKeyEvent", {
             "type": "rawKeyDown", "modifiers": modifiers, **info,
         })

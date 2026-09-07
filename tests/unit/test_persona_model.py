@@ -269,5 +269,109 @@ class QualificationAdmissionTests(unittest.TestCase):
                 Persona.from_mapping({**persona.to_dict(), key: value})
 
 
+class RegionAppearanceTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.template = TemplateCatalog.default().get("linux-firefox-region-appearance-v1")
+
+    def test_four_candidate_combinations_require_new_capabilities(self):
+        self.assertEqual(self.template.version, "1.0.0")
+        self.assertEqual(self.template.status, "candidate")
+        self.assertEqual(len(self.template.variants), 4)
+        self.assertIn("geolocation_window", self.template.required_capabilities)
+        self.assertIn("appearance_window", self.template.required_capabilities)
+        seen = set()
+        for index in range(4):
+            config = self.template.expand(index, "154.0.1")
+            seen.add((config["locale"]["locale"], config["appearance"]["color_scheme"]))
+            self.assertEqual(config["geolocation"]["permission"], "prompt")
+            self.assertEqual(config["geolocation"]["accuracy"], 50)
+            self.assertEqual(config["appearance"]["reduced_motion"],
+                             config["appearance"]["color_scheme"] == "dark")
+        self.assertEqual(seen, {(locale, scheme) for locale in ("zh-CN", "en-US")
+                               for scheme in ("light", "dark")})
+        snapshot = CapabilitySnapshot(environment={"firefox_version": "154.0.1"}, capabilities={})
+        generator = PersonaGenerator(TemplateCatalog([self.template]), snapshot,
+                                     runtime_browser_version="154.0.1")
+        with self.assertRaises(NoEligiblePersonaError):
+            generator.create(seed=1)
+        first = generator.create(seed=1, experimental=True)
+        self.assertEqual(Persona.from_mapping(first.to_dict()).final_config, first.final_config)
+
+    def test_invalid_geolocation_or_appearance_is_rejected(self):
+        cases = [("geolocation", "latitude", True), ("geolocation", "longitude", float("nan")),
+                 ("geolocation", "accuracy", float("inf")), ("geolocation", "latitude", 91),
+                 ("geolocation", "longitude", -181), ("geolocation", "accuracy", -1),
+                 ("geolocation", "permission", "allow"),
+                 ("appearance", "color_scheme", "automatic"),
+                 ("appearance", "contrast", "high"), ("appearance", "forced_colors", 0),
+                 ("appearance", "reduced_motion", "false")]
+        for section, key, value in cases:
+            with self.subTest(section=section, key=key, value=value):
+                data = self.template.to_dict()
+                data["variants"][0][section][key] = value
+                with self.assertRaises(TemplateError):
+                    PersonaTemplate.from_mapping(data)
+
+    def test_cross_region_coordinates_and_timezone_are_rejected(self):
+        for replacement in ({"geolocation": {"latitude": 40.7128, "longitude": -74.0060,
+                                              "accuracy": 50, "permission": "prompt"}},
+                            {"timezone": "America/New_York"}):
+            with self.subTest(replacement=replacement):
+                data = self.template.to_dict()
+                if "geolocation" in replacement:
+                    data["variants"][0]["geolocation"] = replacement["geolocation"]
+                else:
+                    data["variants"][0]["locale"]["timezone"] = replacement["timezone"]
+                with self.assertRaisesRegex(TemplateError, "locale region"):
+                    PersonaTemplate.from_mapping(data)
+
+    def test_missing_geolocation_cannot_be_loaded_as_regional_persona(self):
+        persona = PersonaGenerator(TemplateCatalog([self.template]),
+                                   runtime_browser_version="154.0.1").create(seed=1, experimental=True)
+        data = persona.to_dict()
+        del data["final_config"]["geolocation"]
+        with self.assertRaises(TemplateError):
+            Persona.from_mapping(data)
+
+
+class SoftwareGlxTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.template = TemplateCatalog.default().get("linux-firefox-software-glx-v1")
+
+    def test_software_glx_family_remains_unqualified_and_narrowly_scoped(self):
+        self.assertEqual(self.template.version, "1.0.0")
+        self.assertEqual(self.template.status, "candidate")
+        self.assertEqual(len(self.template.variants), 4)
+        self.assertIn("webgl_window", self.template.required_capabilities)
+        self.assertEqual(len(self.template.required_capabilities), 7)
+        for index in range(4):
+            config = self.template.expand(index, "154.0.1")
+            self.assertEqual(config["graphics"]["hardware_class"], "software")
+            self.assertEqual(config["graphics"]["context_backend"], "glx")
+            self.assertEqual(config["graphics"]["renderer"], "llvmpipe, or similar")
+        snapshot = CapabilitySnapshot(environment={"firefox_version": "154.0.1"}, capabilities={})
+        generator = PersonaGenerator(TemplateCatalog([self.template]), snapshot,
+                                     runtime_browser_version="154.0.1")
+        with self.assertRaises(NoEligiblePersonaError):
+            generator.create(seed=1)
+
+    def test_graphics_cannot_claim_another_backend_or_hardware_identity(self):
+        for key, value in (("execution_backend", "native"), ("context_backend", "egl"),
+                           ("vendor", "Intel"), ("renderer", "Intel UHD Graphics"),
+                           ("hardware_class", "integrated-gpu"), ("webgl1", 1),
+                           ("webgl2", False)):
+            with self.subTest(key=key):
+                data = self.template.to_dict()
+                data["base_config"]["graphics"][key] = value
+                with self.assertRaisesRegex(TemplateError, "software GLX"):
+                    PersonaTemplate.from_mapping(data)
+
+    def test_software_glx_retains_region_constraints(self):
+        data = self.template.to_dict()
+        data["variants"][0]["geolocation"]["latitude"] = 40.7128
+        with self.assertRaisesRegex(TemplateError, "locale region"):
+            PersonaTemplate.from_mapping(data)
+
+
 if __name__ == "__main__":
     unittest.main()
