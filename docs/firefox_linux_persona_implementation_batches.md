@@ -103,7 +103,7 @@ instance_id
 
 ## CI 与 Termux 资格测试边界
 
-- [ ] 在 CI 中运行模板 schema 校验、随机种子复现、兼容性规则、状态门槛、配置序列化、静态检查和不依赖 GUI 的一致性逻辑测试。
+- [x] 在 CI 中运行模板 schema 校验、随机种子复现、兼容性规则、状态门槛、配置序列化、静态检查和不依赖 GUI 的一致性逻辑测试。
 - [ ] 在 CI 中模拟多实例状态机、端口/profile 分配、Popup 继承、关闭恢复和跨 context 期望值检查。
 - [ ] 将真实 Termux、Termux:X11/Xvfb、Firefox GUI、xdotool、GPU、字体、音频、摄像头/麦克风和编解码器资格测试列为本地设备验收。
 - [ ] 明确 CI 通过不能把 `candidate` 模板提升为 `validated`，也不能代替当前 K60 至尊版上的 Firefox/Termux 实测。
@@ -410,8 +410,8 @@ instance_id
 
 ## 工程与验证
 
-- [ ] 创建 GitHub 私有开发仓库并从 Termux 验证 push/pull；保留上游许可证，不提交真实 profile、cookies、凭据或会话数据。
+- [x] 创建 GitHub 私有开发仓库并从 Termux 验证 push/pull；保留上游许可证，不提交真实 profile、cookies、凭据或会话数据。
 - [ ] Persona 功能不破坏 `termux-browser-pilot` 原有的 Firefox 浏览、截图、点击、输入和 session 能力。
-- [ ] GitHub Actions 自动执行所有适合 CI 的模板、状态机、配置和逻辑测试，并能看到明确的通过/失败结果。
+- [x] GitHub Actions 自动执行所有适合 CI 的模板、状态机、配置和逻辑测试，并能看到明确的通过/失败结果。
 - [ ] 真实 Termux/X11/Firefox/GPU/音频/设备资格测试保留为本地验收，并与 CI 范围明确区分。
 - [ ] CI 通过不会自动替代当前设备资格验证，也不会单独把模板状态提升为 `validated`。

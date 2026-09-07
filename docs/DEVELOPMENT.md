@@ -13,10 +13,11 @@
 - Firefox 直接 BiDi 接入、原有输入/截图等操作复用、标签页上下文路由。
 - 本地 HTTP、Window 和 Dedicated/Shared/Service Worker 探针；有限组合串行 bootstrap。
 - 启动失败清理、基础进程预算和异常退出识别。
-- 私有 GitHub 开发仓库已创建，CI 定义已编写；尚未推送或执行 Actions。
+- 私有 GitHub 开发仓库已创建并验证 push/pull；实现提交 `710f18e` 已同步。
 
 已取得的验证证据：
 
+- GitHub Actions 的 Python 3.10 与 3.14 两组检查均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34100366602)。
 - 本地 59 项单元测试通过。单元测试中的模拟证据只检查结构与逻辑，不替代设备资格。
 - 基础真实后端模板 8/8 个组合完成 K60 至尊版串行 bootstrap，浏览器身份、CPU、显示、语言和时区满足当前 Window、三类 Worker 与 HTTP 资格检查。
 - 原生输入、点击及私有路径截图通过；标签页继承与刷新保持 Persona。
@@ -32,7 +33,7 @@
 - WebGL 创建失败，已取得 `FEATURE_FAILURE_NO_DISPLAY` / `EXHAUSTED_DRIVERS` 错误；尚无合格核显身份模板。基础真实后端组合通过不代表核显模板通过。
 - 第二批完整图形、Canvas、Audio、媒体和设备行为，以及第三批其余存储、权限、隐私和网络验收。
 - 环境变化后的旧 Persona 会拒绝恢复；本轮尚无保持原 persona_id/profile/最终配置的重新资格入口，不会静默改写身份。
-- 私有仓库推送与 Actions 实际运行结果仍待完成。
+- 后续批次继续使用私有仓库同步，CI 不替代本机资格。
 
 两实例通过表明本次条件下的并发可用，不代表更高并发上限或任意重页面都已验证。最初多进程测试曾导致 Termux 中断，现有预算属于本地准入估算，后续负载仍需按设备能力控制。
 
