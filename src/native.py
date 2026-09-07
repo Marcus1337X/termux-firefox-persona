@@ -9,11 +9,13 @@ modules work unchanged.
 """
 
 import asyncio
+import ast
 import base64
 import json
 import logging
 import os
 import re
+import signal
 import time
 import shutil
 import tempfile
@@ -27,6 +29,11 @@ FIREFOX_BIN = shutil.which("firefox") or "firefox"
 
 # Default toolbar height for Firefox in Xvfb (updated on first JS call)
 _DEFAULT_TOOLBAR_HEIGHT = 74
+_UNKNOWN_PREF = object()
+
+
+class PreferenceConflictError(RuntimeError):
+    """A requested Firefox pref conflicts with an existing profile value."""
 
 
 class _CallbackHandler(BaseHTTPRequestHandler):
@@ -95,12 +102,43 @@ class NativeFirefoxSession:
     """
 
     def __init__(self, display=":99", window_size="1920,1080",
-                 user_data_dir=None, proxy=None):
+                 user_data_dir=None, proxy=None, launch_env=None, env=None,
+                 prefs=None, remote_debugging_port=None, backend="software",
+                 firefox_backend=None, graphics_backend=None,
+                 gpu_backend=None, firefox_bin=None, prefs_policy="preserve",
+                 profile_kind="user", persona_profile=None):
         self._display = display
         self._window_size = window_size
         self._user_data_dir = user_data_dir
         self._proxy = proxy
+        # ``env`` is retained as a short compatibility spelling; explicit
+        # launch_env wins when both are provided.  All children receive a
+        # private copy and DISPLAY is always forced to this session's display.
+        self._launch_env = dict(env or {})
+        if launch_env:
+            self._launch_env.update(launch_env)
+        self._prefs = dict(prefs or {})
+        if persona_profile is not None:
+            profile_kind = "persona" if persona_profile else "user"
+        self._profile_kind = profile_kind
+        self._prefs_policy = prefs_policy
+        if self._prefs_policy not in ("preserve", "enforce"):
+            raise ValueError("prefs_policy must be 'preserve' or 'enforce'")
+        if self._prefs_policy == "enforce" and self._profile_kind != "persona":
+            raise ValueError(
+                "prefs_policy='enforce' requires profile_kind='persona'"
+            )
+        self._remote_debugging_port = remote_debugging_port
+        self._requested_remote_debugging_port = remote_debugging_port
+        selected_backend = firefox_backend or graphics_backend or gpu_backend or backend
+        self._backend = selected_backend or "software"
+        if self._backend not in ("software", "native"):
+            raise ValueError("Firefox backend must be 'software' or 'native'")
+        self._firefox_bin = firefox_bin or FIREFOX_BIN
         self._firefox_proc = None
+        self._stderr_task = None
+        self._firefox_log = []
+        self._bidi_url = None
         self._callback_server = None
         self._callback_port = None
         self._callback_thread = None
@@ -119,182 +157,362 @@ class NativeFirefoxSession:
         self._last_good_viewport_offset_closed = None  # Last measured offset with console closed
         self._js_lock = asyncio.Lock()  # Serialize JS execution (clipboard is global)
         self._js_available = True  # False when JS exec fails (CSP pages); reset on navigation
+        # A parent can bind a BiDi evaluator after connecting.  Keeping this
+        # hook optional preserves the native xdotool implementation and lets
+        # a per-Persona runtime avoid opening DevTools for ordinary DOM work.
+        self.javascript_evaluator = None
+
+    def _process_env(self):
+        """Build an isolated Firefox/xdotool environment."""
+        env = os.environ.copy()
+        env.update(self._launch_env)
+        env["DISPLAY"] = self._display
+        env["MOZ_CRASHREPORTER_DISABLE"] = "1"
+        if self._backend == "software":
+            env["LIBGL_ALWAYS_SOFTWARE"] = "1"
+        else:
+            # Let Firefox choose the Termux native GL path.  A caller may
+            # still explicitly provide a backend variable in launch_env.
+            env.pop("LIBGL_ALWAYS_SOFTWARE", None)
+        return env
+
+    def bind_javascript_evaluator(self, evaluator):
+        """Install an async ``(js, timeout=...)`` evaluator supplied by BiDi."""
+        if evaluator is not None and not callable(evaluator):
+            raise TypeError("javascript evaluator must be callable or None")
+        self.javascript_evaluator = evaluator
 
     def _cleanup_profile_locks(self):
-        """Remove stale Firefox profile locks from previous crashed sessions."""
-        import glob
-        import subprocess
-        # Only clean locks if Firefox is not currently running
-        for name in ("firefox", "firefox-esr"):
-            try:
-                result = subprocess.run(
-                    ["pgrep", "-x", name],
-                    capture_output=True, text=True, timeout=3
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    logger.debug("Firefox running (%s PID %s), skipping lock cleanup",
-                                 name, result.stdout.strip().split()[0])
-                    return
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-                pass
+        """Prepare only the explicitly owned profile.
+
+        Older versions searched the default Firefox directory, deleted lock
+        and session restore files, and appended duplicate preferences.  That
+        can corrupt another Persona's state.  Lock files are intentionally
+        left to Firefox to validate; the profile owner (the Persona manager)
+        must provide a distinct profile directory.  This method now only
+        applies missing preferences before startup and never removes recovery
+        data. Explicit prefs use ``preserve`` conflict detection by default;
+        only an explicitly marked Persona profile may use ``enforce``.
+        """
         profile_dir = self._user_data_dir
-        if not profile_dir:
-            # Find default profile directory
-            moz_dir = os.path.expanduser("~/.mozilla/firefox")
-            for pattern in ("*.default-default", "*.default"):
-                matches = glob.glob(os.path.join(moz_dir, pattern))
-                if matches:
-                    profile_dir = matches[0]
-                    break
-        if profile_dir and os.path.isdir(profile_dir):
-            for lock_name in ("lock", ".parentlock"):
-                lock_path = os.path.join(profile_dir, lock_name)
-                try:
-                    os.remove(lock_path)
-                    logger.debug("Removed stale lock: %s", lock_path)
-                except (FileNotFoundError, OSError):
-                    pass
-            # Remove session restore files to prevent about:sessionrestore
-            for pattern in ("sessionstore.jsonlz4",
-                            "sessionstore-backups/*.jsonlz4"):
-                for f in glob.glob(os.path.join(profile_dir, pattern)):
-                    try:
-                        os.remove(f)
-                    except OSError:
-                        pass
-            # Disable session restore to avoid "about:sessionrestore" tab
-            user_js = os.path.join(profile_dir, "user.js")
-            prefs = {
-                "browser.sessionstore.resume_from_crash": "false",
-                "browser.startup.homepage_override.mstone": '"ignore"',
-                "browser.tabs.warnOnClose": "false",
-                "browser.shell.checkDefaultBrowser": "false",
-                "datareporting.policy.dataSubmissionEnabled": "false",
-                "toolkit.telemetry.reportingpolicy.firstRun": "false",
-                # Allow paste in Web Console (bypasses "allow pasting" prompt)
-                "devtools.selfxss.count": "100",
-                # Disable console autocomplete (avoids corruption when typing JS)
-                "devtools.editor.autoclosebrackets": "false",
-                "devtools.webconsole.input.autocomplete": "false",
-                # DevTools in separate window — prevents viewport resize and
-                # focus stealing when console opens/closes (fixes dropdown bugs)
-                "devtools.toolbox.host": '"window"',
-                # Auto-download (no save-as dialog)
-                "browser.download.folderList": "2",
-                "browser.download.useDownloadDir": "true",
-                # Allow popups (needed for OAuth flows like Google/Facebook/Apple)
-                "dom.disable_open_during_load": "false",
-                "dom.popup_allowed_events": (
-                    '"change click dblclick auxclick mousedown mouseup '
-                    'pointerdown pointerup notificationclick reset submit '
-                    'touchend contextmenu"'
-                ),
-                "privacy.popups.disable_from_plugins": "0",
-                "dom.popup_maximum": "100",
-            }
-            # Set download directory
-            import json as _json
+        if not profile_dir or not os.path.isdir(profile_dir):
+            return
+
+        from urllib.parse import urlparse as _urlparse
+
+        # Preserve the historical defaults, represented as Python values so
+        # values can be serialized safely.  User supplied prefs are handled
+        # separately below: preserve mode detects conflicts, while enforce
+        # mode is available only for explicitly owned Persona profiles.
+        defaults = {
+            "browser.sessionstore.resume_from_crash": False,
+            "browser.startup.homepage_override.mstone": "ignore",
+            "browser.tabs.warnOnClose": False,
+            "browser.shell.checkDefaultBrowser": False,
+            "datareporting.policy.dataSubmissionEnabled": False,
+            "toolkit.telemetry.reportingpolicy.firstRun": False,
+            "devtools.selfxss.count": 100,
+            "devtools.editor.autoclosebrackets": False,
+            "devtools.webconsole.input.autocomplete": False,
+            "devtools.toolbox.host": "window",
+            "browser.download.folderList": 2,
+            "browser.download.useDownloadDir": True,
+            "dom.disable_open_during_load": False,
+            "dom.popup_allowed_events": (
+                "change click dblclick auxclick mousedown mouseup "
+                "pointerdown pointerup notificationclick reset submit "
+                "touchend contextmenu"
+            ),
+            "privacy.popups.disable_from_plugins": 0,
+            "dom.popup_maximum": 100,
+        }
+        # A Persona must not share downloaded files with another profile.
+        # Keep the legacy global directory for ordinary user profiles.
+        if self._profile_kind == "persona":
+            dl_dir = os.path.join(profile_dir, "downloads")
+        else:
             dl_dir = os.path.join(os.path.expanduser("~/.tbp"), "downloads")
-            os.makedirs(dl_dir, mode=0o700, exist_ok=True)
-            prefs["browser.download.dir"] = _json.dumps(dl_dir)
-            prefs["browser.helperApps.neverAsk.saveToDisk"] = (
-                '"application/octet-stream,application/pdf,application/zip,'
-                'application/gzip,text/csv,text/plain,image/png,image/jpeg,'
-                'application/json,application/xml"'
-            )
-            # Add proxy prefs if configured
-            if self._proxy:
-                from urllib.parse import urlparse as _urlparse
-                pp = _urlparse(self._proxy)
-                proxy_host = pp.hostname or "127.0.0.1"
-                proxy_port = str(pp.port or 1080)
-                # Sanitize hostname to prevent user.js pref injection
-                safe_host = _json.dumps(proxy_host)  # JSON-quoted string
-                if pp.scheme in ("socks5", "socks", "socks5h"):
-                    prefs["network.proxy.type"] = "1"
-                    prefs["network.proxy.socks"] = safe_host
-                    prefs["network.proxy.socks_port"] = proxy_port
-                    prefs["network.proxy.socks_version"] = "5"
-                    prefs["network.proxy.socks_remote_dns"] = "true"
-                elif pp.scheme in ("http", "https"):
-                    prefs["network.proxy.type"] = "1"
-                    prefs["network.proxy.http"] = safe_host
-                    prefs["network.proxy.http_port"] = proxy_port
-                    prefs["network.proxy.ssl"] = safe_host
-                    prefs["network.proxy.ssl_port"] = proxy_port
+        os.makedirs(dl_dir, mode=0o700, exist_ok=True)
+        defaults["browser.download.dir"] = dl_dir
+        defaults["browser.helperApps.neverAsk.saveToDisk"] = (
+            "application/octet-stream,application/pdf,application/zip,"
+            "application/gzip,text/csv,text/plain,image/png,image/jpeg,"
+            "application/json,application/xml"
+        )
+
+        if self._proxy:
+            pp = _urlparse(self._proxy)
+            proxy_host = pp.hostname or "127.0.0.1"
+            proxy_port = int(pp.port or 1080)
+            if pp.scheme in ("socks5", "socks", "socks5h"):
+                defaults.update({
+                    "network.proxy.type": 1,
+                    "network.proxy.socks": proxy_host,
+                    "network.proxy.socks_port": proxy_port,
+                    "network.proxy.socks_version": 5,
+                    "network.proxy.socks_remote_dns": True,
+                })
+            elif pp.scheme in ("http", "https"):
+                defaults.update({
+                    "network.proxy.type": 1,
+                    "network.proxy.http": proxy_host,
+                    "network.proxy.http_port": proxy_port,
+                    "network.proxy.ssl": proxy_host,
+                    "network.proxy.ssl_port": proxy_port,
+                })
+
+        user_js = os.path.join(profile_dir, "user.js")
+        try:
+            with open(user_js, encoding="utf-8") as f:
+                existing = f.read()
+        except FileNotFoundError:
+            existing = ""
+        except OSError as e:
+            logger.debug("Could not read user.js: %s", e)
+            return
+
+        # Firefox's prefs.js is also profile state.  Parse it first and then
+        # user.js (Firefox loads user.js after prefs.js), retaining the last
+        # value for conflict checks.
+        prefs_js = os.path.join(profile_dir, "prefs.js")
+        existing_values = {}
+        try:
+            with open(prefs_js, encoding="utf-8") as f:
+                existing_values.update(self._read_pref_values(f.read()))
+        except (FileNotFoundError, OSError):
+            pass
+        existing_values.update(self._read_pref_values(existing))
+        existing_keys = set(existing_values)
+        additions = []
+        for key, value in defaults.items():
+            if key in existing_keys:
+                continue
+            additions.append(self._format_pref(key, value))
+
+        for key, value in self._prefs.items():
+            if key in existing_values:
+                old_value = existing_values[key]
+                if self._prefs_policy == "preserve":
+                    if old_value is _UNKNOWN_PREF or not self._prefs_equal(old_value, value):
+                        raise PreferenceConflictError(
+                            f"Firefox pref {key!r} in {profile_dir} conflicts "
+                            f"with requested Persona value"
+                        )
+                    continue
+                # enforce is restricted to profile_kind='persona' in __init__.
+            additions.append(self._format_pref(key, value))
+
+        if additions:
             try:
-                existing = ""
-                if os.path.exists(user_js):
-                    with open(user_js) as f:
-                        existing = f.read()
-                with open(user_js, "a") as f:
-                    for key, val in prefs.items():
-                        line = f'user_pref("{key}", {val});'
-                        if line not in existing:
-                            f.write(line + "\n")
+                with open(user_js, "a", encoding="utf-8") as f:
+                    if existing and not existing.endswith("\n"):
+                        f.write("\n")
+                    f.write("\n".join(additions) + "\n")
             except OSError as e:
                 logger.debug("Could not write user.js: %s", e)
+
+    @staticmethod
+    def _read_pref_values(text):
+        """Parse simple one-line Firefox ``user_pref`` assignments."""
+        values = {}
+        pattern = re.compile(
+            r'user_pref\s*\(\s*["\']([^"\']+)["\']\s*,\s*(.*?)\s*\)\s*;'
+        )
+        for match in pattern.finditer(text):
+            raw = match.group(2).strip()
+            try:
+                value = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                try:
+                    value = ast.literal_eval(raw)
+                except (ValueError, SyntaxError, TypeError):
+                    lowered = raw.lower()
+                    if lowered == "true":
+                        value = True
+                    elif lowered == "false":
+                        value = False
+                    elif lowered == "null":
+                        value = None
+                    else:
+                        value = _UNKNOWN_PREF
+            values[match.group(1)] = value
+        return values
+
+    @staticmethod
+    def _prefs_equal(left, right):
+        # bool is an int subclass; Firefox treats those as distinct values.
+        if isinstance(left, bool) != isinstance(right, bool):
+            return False
+        if type(left) is type(right) and left == right:
+            return True
+        return (
+            isinstance(left, (int, float)) and
+            isinstance(right, (int, float)) and
+            not isinstance(left, bool) and not isinstance(right, bool) and
+            left == right
+        )
+
+    @staticmethod
+    def _format_pref(key, value):
+        if isinstance(value, bool):
+            js_value = "true" if value else "false"
+        elif value is None:
+            js_value = "null"
+        elif isinstance(value, (int, float)):
+            js_value = str(value)
+        else:
+            js_value = json.dumps(str(value))
+        return f'user_pref({json.dumps(str(key))}, {js_value});'
 
     async def connect(self):
         """Start Firefox and callback server."""
         from ._utils import require_binaries
         require_binaries("firefox", "xdotool", "xclip", "import")
+        if self._prefs and not self._user_data_dir:
+            raise ValueError(
+                "Firefox prefs require an explicit user_data_dir so the "
+                "profile can be isolated"
+            )
+        if self._profile_kind == "persona" and not self._user_data_dir:
+            raise ValueError(
+                "profile_kind='persona' requires an explicit user_data_dir"
+            )
+        try:
+            # Bind HTTPServer directly to port 0 (OS assigns free port).
+            # Avoids TOCTOU race of finding port then re-binding.
+            self._callback_secret = uuid.uuid4().hex
+            self._callback_server = HTTPServer(
+                ('127.0.0.1', 0), _CallbackHandler)
+            self._callback_port = self._callback_server.server_address[1]
+            self._callback_server.results = {}
+            self._callback_server.results_lock = self._results_lock
+            self._callback_server.secret = self._callback_secret
+            self._callback_thread = threading.Thread(
+                target=self._callback_server.serve_forever, daemon=True)
+            self._callback_thread.start()
 
-        # Bind HTTPServer directly to port 0 (OS assigns free port).
-        # Avoids TOCTOU race of finding port then re-binding.
-        self._callback_secret = uuid.uuid4().hex
-        self._callback_server = HTTPServer(
-            ('127.0.0.1', 0), _CallbackHandler)
-        self._callback_port = self._callback_server.server_address[1]
-        self._callback_server.results = {}
-        self._callback_server.results_lock = self._results_lock
-        self._callback_server.secret = self._callback_secret
-        self._callback_thread = threading.Thread(
-            target=self._callback_server.serve_forever, daemon=True)
-        self._callback_thread.start()
+            # Apply only missing prefs before launching Firefox.  This method
+            # deliberately leaves profile locks and session restore files.
+            if self._user_data_dir:
+                os.makedirs(self._user_data_dir, mode=0o700, exist_ok=True)
+            self._cleanup_profile_locks()
 
-        # Clean stale locks and disable session restore
-        self._cleanup_profile_locks()
+            env = self._process_env()
+            w, h = self._window_size.split(",")
+            args = [
+                self._firefox_bin,
+                "--no-remote",
+                f"--width={w}",
+                f"--height={h}",
+            ]
+            if self._remote_debugging_port is not None:
+                args.append("--remote-debugging-port")
+                args.append(str(self._remote_debugging_port))
+            args.append("about:blank")
 
-        # Start Firefox
-        env = os.environ.copy()
-        env["DISPLAY"] = self._display
-        env["LIBGL_ALWAYS_SOFTWARE"] = "1"
-        env["MOZ_CRASHREPORTER_DISABLE"] = "1"
+            if self._user_data_dir:
+                args.extend(["-profile", self._user_data_dir])
 
-        w, h = self._window_size.split(",")
-        args = [
-            FIREFOX_BIN,
-            "--no-remote",
-            f"--width={w}",
-            f"--height={h}",
-            "about:blank",
-        ]
+            self._firefox_proc = await asyncio.create_subprocess_exec(
+                *args, env=env,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+                # Firefox owns a child process tree.  A private process group
+                # lets close() terminate only this Persona's tree.
+                start_new_session=True,
+            )
+            self._stderr_task = asyncio.create_task(self._drain_firefox_stderr())
+            await asyncio.sleep(6)
 
-        if self._user_data_dir:
-            args.extend(["-profile", self._user_data_dir])
+            if self._firefox_proc.returncode is not None:
+                raise RuntimeError("Firefox failed to start")
 
-        self._firefox_proc = await asyncio.create_subprocess_exec(
-            *args, env=env,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await asyncio.sleep(6)
+            # Firefox chooses an available port for --remote-debugging-port=0.
+            # Do not pretend that endpoint exists if startup did not publish it.
+            if self._requested_remote_debugging_port == 0:
+                deadline = asyncio.get_running_loop().time() + 10
+                while not self._bidi_url and asyncio.get_running_loop().time() < deadline:
+                    await asyncio.sleep(0.1)
+                if not self._bidi_url:
+                    raise RuntimeError(
+                        "Firefox did not publish a WebDriver BiDi endpoint "
+                        "for remote_debugging_port=0"
+                    )
 
-        if self._firefox_proc.returncode is not None:
-            raise RuntimeError("Firefox failed to start")
+            # Discover the main browser window ID for window management.  The
+            # search is PID-scoped; never select an unrelated Firefox by title.
+            await self._find_main_window()
 
-        # Discover the main browser window ID for window management
-        await self._find_main_window()
+            logger.info("Native Firefox started (pid %d), callback port %d, main_wid=%s",
+                        self._firefox_proc.pid, self._callback_port, self._main_wid)
+            return self
+        except BaseException:
+            await self.close()
+            raise
 
-        logger.info("Native Firefox started (pid %d), callback port %d, main_wid=%s",
-                     self._firefox_proc.pid, self._callback_port, self._main_wid)
-        return self
+    async def _drain_firefox_stderr(self):
+        """Drain Firefox logs and capture its WebDriver BiDi endpoint."""
+        proc = self._firefox_proc
+        stream = getattr(proc, "stderr", None)
+        if stream is None:
+            return
+        endpoint_re = re.compile(r"(wss?://[^\s\]\)\"']+)")
+        try:
+            while True:
+                line = await stream.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").rstrip()
+                self._firefox_log.append(text)
+                match = endpoint_re.search(text)
+                if match and ("bidi" in text.lower() or "listening" in text.lower()):
+                    endpoint = match.group(1)
+                    # Firefox announces the origin endpoint; WebSocket BiDi
+                    # clients connect on its /session resource.
+                    from urllib.parse import urlparse, urlunparse
+                    parsed = urlparse(endpoint)
+                    if parsed.path in ("", "/"):
+                        parsed = parsed._replace(path="/session")
+                    self._bidi_url = urlunparse(parsed)
+                    try:
+                        from urllib.parse import urlparse
+                        port = urlparse(self._bidi_url).port
+                        if port:
+                            self._remote_debugging_port = port
+                    except (TypeError, ValueError):
+                        pass
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Firefox stderr reader stopped", exc_info=True)
+
+    @property
+    def bidi_url(self):
+        """The endpoint announced by Firefox, if BiDi was requested."""
+        return self._bidi_url
+
+    @property
+    def remote_debugging_port(self):
+        """Configured or discovered Firefox remote debugging port."""
+        return self._remote_debugging_port
+
+    @property
+    def firefox_process(self):
+        """The owned Firefox subprocess, for runtime resource tracking."""
+        return self._firefox_proc
+
+    @property
+    def firefox_log(self):
+        """Copy of stderr lines drained during startup and runtime."""
+        return tuple(self._firefox_log)
+
+    def owned_processes(self):
+        """Return currently owned process objects for a runtime supervisor."""
+        return tuple(p for p in (self._firefox_proc,) if p is not None)
 
     async def _xdt(self, args, timeout=10):
         """Execute xdotool command with explicit DISPLAY and timeout."""
-        env = os.environ.copy()
-        env["DISPLAY"] = self._display
+        env = self._process_env()
         proc = await asyncio.create_subprocess_exec(
             "xdotool", *args, env=env,
             stdout=asyncio.subprocess.PIPE,
@@ -355,6 +573,11 @@ class NativeFirefoxSession:
         regardless of page CSP restrictions. Serialized via lock since
         clipboard is global X11 state.
         """
+        if self.javascript_evaluator is not None:
+            result = self.javascript_evaluator(expression, timeout=timeout)
+            if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+                result = await result
+            return result
         async with self._js_lock:
             return await self._exec_js_inner(expression, timeout)
 
@@ -495,8 +718,7 @@ class NativeFirefoxSession:
 
     async def _clipboard_read(self):
         """Read text from X11 clipboard via xclip."""
-        env = os.environ.copy()
-        env["DISPLAY"] = self._display
+        env = self._process_env()
         proc = await asyncio.create_subprocess_exec(
             "xclip", "-selection", "clipboard", "-o",
             stdout=asyncio.subprocess.PIPE,
@@ -513,8 +735,7 @@ class NativeFirefoxSession:
         intermediate clipboard reads (from WM or DevTools) don't consume
         the content before Ctrl+V can paste it. Killed after paste.
         """
-        env = os.environ.copy()
-        env["DISPLAY"] = self._display
+        env = self._process_env()
         try:
             proc = await asyncio.create_subprocess_exec(
                 "xclip", "-selection", "clipboard",
@@ -594,46 +815,50 @@ class NativeFirefoxSession:
     async def _find_main_window(self):
         """Find the main Firefox browser window ID.
 
-        Searches for the Firefox window by PID or name. Called once after
-        Firefox starts to establish _main_wid for window management.
+        Searches only windows owned by this Firefox PID.  Title matching is
+        unsafe when several Persona displays contain Firefox instances.
         """
-        env = {**os.environ, "DISPLAY": self._display}
-        # Try by PID first (most reliable)
         if self._firefox_proc and self._firefox_proc.pid:
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    "xdotool", "search", "--pid",
-                    str(self._firefox_proc.pid), "--name", "",
-                    env=env, stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                out, _ = await proc.communicate()
-                for wid in out.decode().strip().split("\n"):
-                    wid = wid.strip()
-                    if wid:
+                windows = await self._windows_for_pid(self._firefox_proc.pid)
+                # Prefer a normal browser title, while retaining PID scope.
+                for wid, name in windows:
+                    if "developer tools" not in name.lower():
                         self._main_wid = wid
                         logger.debug("Found main window by PID: %s", wid)
                         return wid
+                if windows:
+                    self._main_wid = windows[0][0]
+                    return self._main_wid
             except Exception:
-                pass
-        # Fallback: search by Firefox window name
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "xdotool", "search", "--name", "Mozilla Firefox",
+                logger.debug("PID-scoped Firefox window lookup failed", exc_info=True)
+        logger.warning("Could not find main Firefox window ID")
+        return None
+
+    async def _windows_for_pid(self, pid):
+        """Return ``[(window_id, title), ...]`` for one process PID."""
+        env = self._process_env()
+        proc = await asyncio.create_subprocess_exec(
+            # Firefox creates hidden helper/utility windows in the same PID.
+            # Restrict enumeration to mapped windows before title selection.
+            "xdotool", "search", "--onlyvisible", "--pid", str(pid),
+            env=env, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+        windows = []
+        for wid in out.decode().strip().splitlines():
+            wid = wid.strip()
+            if not wid:
+                continue
+            name_proc = await asyncio.create_subprocess_exec(
+                "xdotool", "getwindowname", wid,
                 env=env, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            out, _ = await proc.communicate()
-            for wid in out.decode().strip().split("\n"):
-                wid = wid.strip()
-                if wid:
-                    self._main_wid = wid
-                    logger.debug("Found main window by name: %s", wid)
-                    return wid
-        except Exception:
-            pass
-        logger.warning("Could not find main Firefox window ID")
-        return None
+            name_out, _ = await name_proc.communicate()
+            windows.append((wid, name_out.decode(errors="replace").strip()))
+        return windows
 
     async def _find_devtools_window(self):
         """Find the DevTools window ID (separate window mode).
@@ -641,22 +866,16 @@ class NativeFirefoxSession:
         Searches for windows with 'Developer Tools' in the title that
         aren't the main browser window.
         """
-        env = {**os.environ, "DISPLAY": self._display}
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "xdotool", "search", "--name", "Developer Tools",
-                env=env, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            out, _ = await proc.communicate()
-            for wid in out.decode().strip().split("\n"):
-                wid = wid.strip()
-                if wid and wid != self._main_wid:
-                    self._devtools_wid = wid
-                    logger.debug("Found DevTools window: %s", wid)
-                    return wid
-        except Exception:
-            pass
+        if self._firefox_proc and self._firefox_proc.pid:
+            try:
+                windows = await self._windows_for_pid(self._firefox_proc.pid)
+                for wid, name in windows:
+                    if wid != self._main_wid and "developer tools" in name.lower():
+                        self._devtools_wid = wid
+                        logger.debug("Found DevTools window: %s", wid)
+                        return wid
+            except Exception:
+                logger.debug("PID-scoped DevTools window lookup failed", exc_info=True)
         return None
 
     async def _hide_devtools(self):
@@ -828,20 +1047,88 @@ class NativeFirefoxSession:
             except ValueError:
                 pass
 
+    @staticmethod
+    def _signal_owned_group(proc, sig):
+        """Signal a process group only while its session leader is alive."""
+        pid = getattr(proc, "pid", None)
+        if not pid or pid <= 1 or getattr(proc, "returncode", None) is not None:
+            return False
+        try:
+            # start_new_session=True makes the Firefox leader its own PGID.
+            if os.getpgid(pid) != pid:
+                return False
+            os.killpg(pid, sig)
+            return True
+        except (ProcessLookupError, PermissionError, OSError):
+            return False
+
+    async def _stop_firefox_process(self):
+        """Terminate the owned Firefox tree, including cancellation paths."""
+        proc = self._firefox_proc
+        if proc is None:
+            return
+        try:
+            if proc.returncode is None:
+                # Let Firefox flush profile/session state first.
+                if not self._signal_owned_group(proc, signal.SIGTERM):
+                    try:
+                        proc.terminate()
+                    except (ProcessLookupError, OSError):
+                        pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    self._signal_owned_group(proc, signal.SIGKILL)
+                    try:
+                        proc.kill()
+                    except (ProcessLookupError, OSError):
+                        pass
+                    await proc.wait()
+        except asyncio.CancelledError:
+            # A cancelled supervisor must still release this instance's tree.
+            self._signal_owned_group(proc, signal.SIGKILL)
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+            try:
+                await asyncio.shield(proc.wait())
+            except BaseException:
+                pass
+            raise
+        finally:
+            self._firefox_proc = None
+
     async def close(self):
         """Close Firefox and callback server."""
+        cancellation = None
+        try:
+            await self._stop_firefox_process()
+        except asyncio.CancelledError as exc:
+            # _stop_firefox_process has already killed and waited for the
+            # Firefox tree; finish callback/task cleanup before re-cancelling.
+            cancellation = exc
         if self._callback_server:
-            await asyncio.to_thread(self._callback_server.shutdown)
-            self._callback_server = None
-        if self._firefox_proc and self._firefox_proc.returncode is None:
-            self._firefox_proc.terminate()
+            server = self._callback_server
+            callback_thread = self._callback_thread
             try:
-                await asyncio.wait_for(self._firefox_proc.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                self._firefox_proc.kill()
-                await self._firefox_proc.wait()
-        self._firefox_proc = None
+                await asyncio.shield(asyncio.to_thread(server.shutdown))
+            finally:
+                server.server_close()
+                self._callback_server = None
+            if callback_thread:
+                await asyncio.shield(asyncio.to_thread(callback_thread.join, 2))
+            self._callback_thread = None
+        if self._stderr_task:
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
+            except BaseException:
+                pass
+            self._stderr_task = None
         self._disconnected = True
+        if cancellation is not None:
+            raise cancellation
 
     async def delete_session(self):
         """No-op for native session (close handles everything)."""
@@ -928,8 +1215,7 @@ async def _capture_screenshot(session, params, timeout):
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
         tmp_path = tmp.name
 
-    env = os.environ.copy()
-    env["DISPLAY"] = session._display
+    env = session._process_env()
 
     # Capture main window directly — avoids focus-changing _close_console()
     # which triggers blur events and closes modals on sites like Upwork.

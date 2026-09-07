@@ -86,15 +86,23 @@ class BrowserPilot:
     def __init__(self, display=XVFB_DISPLAY, cdp_port=CDP_PORT,
                  headless_xvfb=True, chromium_bin=CHROMIUM_BIN,
                  window_size="1920,1080", user_data_dir=None,
-                 gpu_mode="auto", browser_type="chromium", proxy=None):
+                 gpu_mode="auto", browser_type="chromium", proxy=None,
+                 launch_env=None, screen_size=None):
         self.display = display
         self.cdp_port = cdp_port
         self.headless_xvfb = headless_xvfb
         self.chromium_bin = chromium_bin
         self.window_size = window_size
+        # The browser window may be smaller than the virtual X screen.  Keep
+        # the old behavior when screen_size is omitted.
+        self.screen_size = screen_size or window_size
         self.browser_type = browser_type  # "chromium" or "firefox"
         self._gpu_mode = gpu_mode  # "auto", "virgl", "swiftshader"
         self._proxy = proxy  # Proxy URL for Chromium --proxy-server flag
+        # Keep process environment instance-local.  In particular, never
+        # mutate os.environ: two Persona instances may have different X11
+        # displays and must not race while launching child processes.
+        self._launch_env = dict(launch_env or {})
         self._virgl = None
         self._xvfb_proc = None
         self._wm_proc = None  # Window manager (openbox)
@@ -107,26 +115,44 @@ class BrowserPilot:
     async def start(self):
         """Start Xvfb + browser. Returns WS URL (Chromium) or None (Firefox)."""
         from ._utils import require_binaries
-        require_binaries("Xvfb")
-        if self.browser_type != "firefox":
-            if not shutil.which(self.chromium_bin):
-                raise RuntimeError(
-                    f"Chromium not found at '{self.chromium_bin}'. "
-                    f"Install with: pkg install chromium"
-                )
+        try:
+            require_binaries("Xvfb")
+            if self.browser_type != "firefox":
+                if not shutil.which(self.chromium_bin):
+                    raise RuntimeError(
+                        f"Chromium not found at '{self.chromium_bin}'. "
+                        f"Install with: pkg install chromium"
+                    )
 
+            if self.headless_xvfb:
+                await self._start_xvfb()
+
+            if self.browser_type == "firefox":
+                # Firefox: no geckodriver needed — NativeSession handles launch
+                return None
+
+            # Chromium path
+            await self._setup_gpu()
+            await self._start_chromium()
+            self._ws_url = await self._wait_for_cdp()
+            return self._ws_url
+        except BaseException:
+            # Startup can fail after any one of Xvfb, the WM, virgl, or the
+            # browser has started.  Stop only process objects owned by this
+            # instance before propagating the original error.
+            try:
+                await self.stop()
+            except Exception:
+                logger.debug("Error cleaning up failed browser startup", exc_info=True)
+            raise
+
+    def _process_env(self):
+        """Return the environment for a child process in this instance."""
+        env = os.environ.copy()
+        env.update(self._launch_env)
         if self.headless_xvfb:
-            await self._start_xvfb()
-
-        if self.browser_type == "firefox":
-            # Firefox: no geckodriver needed — NativeSession handles launch
-            return None
-
-        # Chromium path
-        await self._setup_gpu()
-        await self._start_chromium()
-        self._ws_url = await self._wait_for_cdp()
-        return self._ws_url
+            env["DISPLAY"] = self.display
+        return env
 
     async def _setup_gpu(self):
         """Resolve GPU rendering mode (auto-detect best available)."""
@@ -157,46 +183,59 @@ class BrowserPilot:
 
     async def _start_xvfb(self):
         """Launch Xvfb virtual display (non-blocking)."""
-        # Kill any existing Xvfb on this display
-        proc = await asyncio.create_subprocess_exec(
-            "pkill", "-f", f"Xvfb {self.display}( |$)",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
-        await asyncio.sleep(0.3)
+        # Never kill or unlink another instance's X server.  A display with
+        # either ownership marker present is reserved; callers should choose a
+        # fresh display after a crashed session.
+        if not isinstance(self.display, str) or not self.display.startswith(":"):
+            raise ValueError(f"Invalid X display: {self.display!r}")
+        display_num = self.display[1:]
+        if not display_num.isdigit():
+            raise ValueError(f"Invalid X display: {self.display!r}")
+        temp_roots = []
+        for root in (
+            self._launch_env.get("TMPDIR"),
+            os.environ.get("TMPDIR"),
+            "/tmp",
+        ):
+            if root:
+                root = os.path.abspath(root)
+                if root not in temp_roots:
+                    temp_roots.append(root)
+        display_paths = []
+        for root in temp_roots:
+            display_paths.extend((
+                os.path.join(root, f".X{display_num}-lock"),
+                os.path.join(root, ".X11-unix", f"X{display_num}"),
+            ))
+        occupied = [path for path in display_paths if os.path.exists(path)]
+        if occupied:
+            raise RuntimeError(
+                f"X display {self.display} is already in use or has stale "
+                f"ownership markers: {', '.join(occupied)}"
+            )
 
-        # Clean stale Xvfb lock files (left after OOM kills/crashes)
-        display_num = self.display.lstrip(":")
-        for stale in (f"/tmp/.X{display_num}-lock",
-                      f"/tmp/.X11-unix/X{display_num}"):
-            try:
-                os.unlink(stale)
-            except (FileNotFoundError, OSError):
-                pass
-
-        w, h = self.window_size.split(",")
+        w, h = self.screen_size.split(",")
         resolution = f"{w}x{h}x24"
         self._xvfb_proc = await asyncio.create_subprocess_exec(
             "Xvfb", self.display, "-screen", "0", resolution,
             "-ac", "-nolisten", "tcp",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            env=self._process_env(),
         )
-        os.environ["DISPLAY"] = self.display
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.2)
+
+        if self._xvfb_proc.returncode is not None:
+            raise RuntimeError(
+                f"Xvfb failed to start on {self.display} "
+                f"(exit {self._xvfb_proc.returncode})"
+            )
 
         # Start a lightweight window manager (required for window
         # minimize/activate/raise operations used by DevTools management).
-        # Kill any existing openbox first.
-        proc = await asyncio.create_subprocess_exec(
-            "pkill", "-f", f"openbox.*{self.display}",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
-        env = os.environ.copy()
-        env["DISPLAY"] = self.display
+        # This instance owns exactly one WM process.  Do not pkill a WM that
+        # belongs to another BrowserPilot sharing the host.
+        env = self._process_env()
         openbox_bin = shutil.which("openbox")
         if openbox_bin:
             self._wm_proc = await asyncio.create_subprocess_exec(
@@ -215,23 +254,13 @@ class BrowserPilot:
         if self._xvfb_proc.returncode is not None:
             raise RuntimeError("Xvfb failed to start")
 
-        # Start lightweight WM (needed for keyboard shortcut routing)
-        if shutil.which("openbox"):
-            self._wm_proc = await asyncio.create_subprocess_exec(
-                "openbox", env={**os.environ, "DISPLAY": self.display},
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.sleep(0.3)
-
     async def _start_chromium(self):
         """Launch Chromium with CDP enabled (non-blocking).
 
         Uses multi-process mode by default. If Chromium crashes within 3s,
         auto-retries with --single-process as fallback.
         """
-        env = os.environ.copy()
-        env["DISPLAY"] = self.display
+        env = self._process_env()
 
         if self._gpu_mode == "virgl" and self._virgl:
             env.update(self._virgl.get_env())
@@ -356,20 +385,42 @@ class BrowserPilot:
     def ws_url(self):
         return self._ws_url
 
+    @property
+    def owned_processes(self):
+        """Return process handles owned by this BrowserPilot instance."""
+        return tuple(
+            proc for proc in (self._chrome_proc, self._wm_proc, self._xvfb_proc)
+            if proc is not None
+        )
+
     async def stop(self):
         """Shut down Chromium and Xvfb gracefully (non-blocking, robust).
 
         Uses SIGTERM first, gives processes time to flush state, then SIGKILL.
         Cleans up temporary user-data-dir afterward.
         """
+        cancellation = None
         for proc in (self._chrome_proc, self._wm_proc, self._xvfb_proc):
             if proc and proc.returncode is None:
                 try:
                     proc.terminate()
                     await asyncio.wait_for(proc.wait(), timeout=5.0)
                 except asyncio.TimeoutError:
-                    proc.kill()
+                    try:
+                        proc.kill()
+                    except (ProcessLookupError, OSError):
+                        pass
                     await proc.wait()
+                except asyncio.CancelledError as exc:
+                    cancellation = exc
+                    try:
+                        proc.kill()
+                    except (ProcessLookupError, OSError):
+                        pass
+                    try:
+                        await asyncio.shield(proc.wait())
+                    except BaseException:
+                        pass
                 except Exception as e:
                     logger.warning("Error stopping process: %s", e)
         self._chrome_proc = None
@@ -395,6 +446,8 @@ class BrowserPilot:
             except Exception as e:
                 logger.debug("Error cleaning user-data-dir: %s", e)
         self._user_data_dir = None
+        if cancellation is not None:
+            raise cancellation
 
     async def __aenter__(self):
         await self.start()

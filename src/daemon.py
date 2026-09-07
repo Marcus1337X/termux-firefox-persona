@@ -19,7 +19,8 @@ import time
 
 logger = logging.getLogger(__name__)
 
-TBP_DIR = os.path.expanduser("~/.tbp")
+# Persona workers set this before importing daemon; legacy callers keep ~/.tbp.
+TBP_DIR = os.path.expanduser(os.environ.get("TBP_RUNTIME_DIR", "~/.tbp"))
 SOCKET_PATH = os.path.join(TBP_DIR, "daemon.sock")
 PID_PATH = os.path.join(TBP_DIR, "daemon.pid")
 LOG_PATH = os.path.join(TBP_DIR, "daemon.log")

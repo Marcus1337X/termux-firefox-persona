@@ -1,10 +1,11 @@
-"""File-based session locking for single browser instance.
+"""Kernel-backed file locking for browser sessions.
 
-Uses a PID-based lockfile to prevent multiple browser instances
-from conflicting on CDP port and Xvfb display.
-Stale locks (dead PIDs) are automatically cleaned up.
+The PID text is diagnostic only; ``flock`` is the ownership mechanism and is
+released by the kernel when the owning process exits.
 """
 
+import errno
+import fcntl
 import logging
 import os
 
@@ -17,11 +18,12 @@ DEFAULT_LOCK_PATH = os.path.join(
 
 
 class SessionLock:
-    """Ensure only one browser instance runs at a time."""
+    """Ensure one owner for a lock path using non-blocking ``flock``."""
 
     def __init__(self, lock_path=DEFAULT_LOCK_PATH):
-        self.lock_path = lock_path
+        self.lock_path = os.fspath(lock_path)
         self._acquired = False
+        self._fd = None
 
     def _is_pid_alive(self, pid):
         """Check if a process with given PID is still running."""
@@ -34,50 +36,46 @@ class SessionLock:
             return False
 
     def acquire(self):
-        """Acquire the lock. Raises RuntimeError if already locked."""
-        if os.path.exists(self.lock_path):
-            try:
-                with open(self.lock_path) as f:
-                    old_pid = int(f.read().strip())
-                if self._is_pid_alive(old_pid):
-                    raise RuntimeError(
-                        f"Another browser session is running "
-                        f"(PID {old_pid}). Wait for it to finish "
-                        f"or remove {self.lock_path}"
-                    )
-                else:
-                    logger.info(
-                        "Removing stale lock (PID %d dead)", old_pid
-                    )
-                    os.remove(self.lock_path)
-            except (ValueError, FileNotFoundError):
-                try:
-                    os.remove(self.lock_path)
-                except FileNotFoundError:
-                    pass
-
+        """Acquire immediately or raise ``RuntimeError`` if held."""
+        if self._acquired:
+            return
+        parent = os.path.dirname(os.path.abspath(self.lock_path))
+        if parent:
+            os.makedirs(parent, mode=0o700, exist_ok=True)
+        fd = None
         try:
-            fd = os.open(
-                self.lock_path,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                0o600,
-            )
-        except FileExistsError:
-            raise RuntimeError(
-                "Another browser session acquired the lock concurrently."
-            )
-        with os.fdopen(fd, "w") as f:
-            f.write(str(os.getpid()))
-        self._acquired = True
+            fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno in (errno.EACCES, errno.EAGAIN):
+                    raise RuntimeError(
+                        f"Another browser session is running (lock: {self.lock_path})"
+                    ) from exc
+                raise
+            os.ftruncate(fd, 0)
+            os.write(fd, str(os.getpid()).encode("ascii"))
+            os.fsync(fd)
+            self._fd = fd
+            self._acquired = True
+        except Exception:
+            if fd is not None and not self._acquired:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            raise
 
     def release(self):
-        """Release the lock."""
-        if self._acquired:
-            try:
-                os.remove(self.lock_path)
-            except FileNotFoundError:
-                pass
-            self._acquired = False
+        """Release the kernel lock and close the descriptor."""
+        if not self._acquired:
+            return
+        fd, self._fd = self._fd, None
+        self._acquired = False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
     def __enter__(self):
         self.acquire()
@@ -85,3 +83,9 @@ class SessionLock:
 
     def __exit__(self, *exc):
         self.release()
+
+    def __del__(self):
+        try:
+            self.release()
+        except Exception:
+            pass

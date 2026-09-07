@@ -43,7 +43,12 @@ class Pilot:
 
     def __init__(self, cdp_port=9222, display=":99", headless_xvfb=True,
                  session_file=None, user_data_dir=None, gpu_mode="auto",
-                 window_size="auto", browser="auto", proxy=None):
+                 window_size="auto", browser="auto", proxy=None,
+                 lock_path=None, launch_env=None, firefox_launch_env=None,
+                 prefs=None, firefox_prefs=None, remote_debugging_port=None,
+                 firefox_backend="software", screen_size=None,
+                 prefs_policy="preserve", profile_kind="user",
+                 persona_profile=None):
         """Initialize Pilot.
 
         Args:
@@ -59,16 +64,43 @@ class Pilot:
             browser: "firefox" (default, passes CF natively),
                 "chromium", or "auto" (= firefox).
             proxy: Proxy URL (http://host:port or socks5://host:port).
+            lock_path: Per-Persona flock path. Set a distinct path for each
+                independent runtime; omitted retains the legacy global lock.
+            launch_env/firefox_launch_env: Environment overrides for child
+                processes. Firefox-specific spelling is preferred for Firefox.
+            prefs/firefox_prefs: Firefox user.js preferences applied before
+                launch without replacing keys already owned by the user.
+            remote_debugging_port: Optional Firefox BiDi port (0 lets Firefox
+                choose and exposes the announced URL on the native session).
+            firefox_backend: ``software`` (legacy default) or ``native`` GL.
+            screen_size: Xvfb screen size independent of browser window_size.
+            prefs_policy: ``preserve`` (detect conflicts) or ``enforce`` for
+                explicitly owned Persona profiles.
+            profile_kind/persona_profile: Declare an owned Persona profile
+                before using enforce mode.
         """
         # Resolve browser choice
         if browser == "auto":
             browser = "firefox"
         self._browser_type = browser
         self._proxy = proxy
+        self._launch_env = dict(launch_env or {})
+        if firefox_launch_env:
+            self._launch_env.update(firefox_launch_env)
+        self._firefox_prefs = dict(prefs or {})
+        if firefox_prefs:
+            self._firefox_prefs.update(firefox_prefs)
+        self._remote_debugging_port = remote_debugging_port
+        self._firefox_backend = firefox_backend
+        self._prefs_policy = prefs_policy
+        self._profile_kind = profile_kind
+        self._persona_profile = persona_profile
 
         # Resolve window size from device if auto
         if window_size == "auto":
             window_size = self._detect_window_size()
+        if screen_size in (None, "auto"):
+            screen_size = window_size
 
         self._browser = BrowserPilot(
             display=display,
@@ -79,8 +111,10 @@ class Pilot:
             window_size=window_size,
             browser_type=browser,
             proxy=proxy,
+            launch_env=self._launch_env,
+            screen_size=screen_size,
         )
-        self._lock = SessionLock()
+        self._lock = SessionLock(lock_path) if lock_path else SessionLock()
         self._session = None
         self._session_file = session_file
         self.page = None
@@ -140,6 +174,13 @@ class Pilot:
                 window_size=self._browser.window_size,
                 user_data_dir=self._browser._external_user_data_dir,
                 proxy=self._proxy,
+                launch_env=self._launch_env,
+                prefs=self._firefox_prefs,
+                remote_debugging_port=self._remote_debugging_port,
+                backend=self._firefox_backend,
+                prefs_policy=self._prefs_policy,
+                profile_kind=self._profile_kind,
+                persona_profile=self._persona_profile,
             )
             await self._session.connect()
         else:
@@ -165,8 +206,11 @@ class Pilot:
         self.screenshot_cmd = ScreenshotCommands(self._session)
         self.input = InputCommands(self._session)
         self.accessibility = AccessibilityCommands(self._session)
-        self.cloudflare = CloudflareHandler(self.page, self.input,
-                                                    display=self._browser.display)
+        self.cloudflare = (
+            CloudflareHandler(self.page, self.input,
+                              display=self._browser.display)
+            if CloudflareHandler is not None else None
+        )
         self.cookies = CookieCommands(self._session)
 
         # NetworkTracker only works with CDP events (Chromium)
@@ -249,6 +293,8 @@ class Pilot:
         """
         if self._browser_type == "firefox":
             return await self._firefox_cf_navigate(url, timeout)
+        if self.cloudflare is None:
+            raise RuntimeError("Cloudflare support is unavailable")
         return await self.cloudflare.navigate_with_cf(url, timeout)
 
     async def _firefox_cf_navigate(self, url, timeout=60):

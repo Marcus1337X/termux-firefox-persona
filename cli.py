@@ -428,6 +428,9 @@ def _output(args, data):
 # ── Argument parser ──────────────────────────────────
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "persona":
+        from src.persona.cli import main as persona_main
+        return persona_main(sys.argv[2:])
     # Common args inherited by all subcommands
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--timeout", type=int, default=45)

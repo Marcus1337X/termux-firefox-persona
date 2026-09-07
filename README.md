@@ -1,5 +1,9 @@
 # Termux Browser Pilot v0.17.1
 
+This development fork adds isolated Linux Firefox Personas generated from
+locally qualified presets. See [Persona setup and current scope](docs/PERSONA.md)
+and the [device acceptance record](docs/DEVELOPMENT.md).
+
 Real browser automation for Termux/Android. No root required.
 
 Firefox (default) or Chromium on Xvfb — runs entirely on your phone.

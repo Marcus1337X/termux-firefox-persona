@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "templates": [
+    {
+      "schema_version": 1,
+      "id": "linux-firefox-igpu-candidate-phase0",
+      "version": "0.1.0",
+      "status": "candidate",
+      "strict_eligible": false,
+      "metadata": {
+        "phase": 0,
+        "description": "Illustrative Intel/AMD integrated GPU family candidate; not verified on K60 Termux",
+        "identity_source": "template_candidate",
+        "execution_backend": "termux_runtime",
+        "hardware_class": "integrated-gpu",
+        "verification_required": "current_environment_and_full_combination",
+        "strict_pool_policy": "never_silent"
+      },
+      "base_config": {
+        "browser": {
+          "family": "firefox",
+          "platform": "Linux x86_64",
+          "oscpu": "Linux x86_64",
+          "app_version": "5.0 (X11)",
+          "firefox_version": "runtime",
+          "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:{firefox_version_major}.0) Gecko/20100101 Firefox/{firefox_version_major}.0"
+        },
+        "graphics": {
+          "identity_class": "linux-integrated-gpu-candidate",
+          "vendor": "Intel-or-AMD-candidate",
+          "renderer": "candidate-requires-probe",
+          "execution_backend": "termux_runtime",
+          "hardware_class": "integrated-gpu"
+        }
+      },
+      "required_capabilities": [
+        "browser_identity",
+        "cpu_window_worker",
+        "display_window",
+        "locale_window_worker_http",
+        "graphics_full_combination"
+      ],
+      "variants": [
+        {
+          "variant_id": "candidate-default",
+          "cpu": {"hardware_concurrency": 2},
+          "display": {
+            "window_policy": "maximized",
+            "viewport_policy": "derived",
+            "screen_width": 1280,
+            "screen_height": 800,
+            "avail_width": 1280,
+            "avail_height": 800,
+            "device_pixel_ratio": 1,
+            "color_depth": 24,
+            "pixel_depth": 24,
+            "orientation": "landscape"
+          },
+          "locale": {
+            "locale": "en-US",
+            "languages": ["en-US", "en"],
+            "accept_language": "en-US,en;q=0.9",
+            "timezone": "America/New_York"
+          }
+        }
+      ]
+    }
+  ]
+}
