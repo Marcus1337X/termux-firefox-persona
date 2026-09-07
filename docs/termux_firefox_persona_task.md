@@ -6,7 +6,7 @@
 
 新模板要求 Dedicated、Shared、Service Worker 分别通过本地字体正反向加载、三个通用别名、OffscreenCanvas 文字像素与 TextMetrics、convertToBlob PNG 解码，以及 WebGL1/2 shader/红色像素/RGBA8 framebuffer 绿色像素检查。各 Worker 字体渲染及图形身份还必须与 Window 一致。Worker 不具备的 toDataURL 明确标为不适用，缺失任一 Worker 证据不授予完整资格。
 
-15 组实机生命周期验收全部通过，包括不同字体的双实例隔离、原生输入与截图、标签页/弹窗/Ctrl+N 继承、重启后 Window 与三类 Worker 的实际像素/测量/GL 结果保持。双实例应用进程数为 30，测试实例全部停止。完整探针在单实例阶段执行，再重启原 profile 进入双实例阶段，不提高预算。本轮 CI 待推送后记录。
+15 组实机生命周期验收全部通过，包括不同字体的双实例隔离、原生输入与截图、标签页/弹窗/Ctrl+N 继承、重启后 Window 与三类 Worker 的实际像素/测量/GL 结果保持。双实例应用进程数为 30，测试实例全部停止。完整探针在单实例阶段执行，再重启原 profile 进入双实例阶段，不提高预算。实现提交 `05c20f3` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34109507645)。
 
 此前地理位置、四项外观、私有字体及保留 ID/种子/最终配置/profile 的 requalify 继续有效。Worker 图形探针仅在新模板启用，旧模板保持原资格范围。Liberation、完整 graphics precision/limits/extensions、核显身份、媒体/网络及标签页拖出仍未完成，完整第一批和第二批尚未全部完成。下列勾选只表示明确范围内已有实机证据。
 

@@ -12,7 +12,7 @@
 
 四个 bootstrap 身份：`persona_c5cb84b895fdea132e118e6d0a5796dd`、`persona_6286501b9d759893f4a86a448d08f426`、`persona_f01241f647427a4e51b2d7903006ff5b`、`persona_1181cb73bd318ad46a9d81deb7840dab`。
 
-15 组实机生命周期验收全部通过，身份为 `persona_d8722614d2e745d2b9bd2d411f85e75f` / `persona_857221f37c194923b28523cdbc48f682`，包括双实例不同字体集合、Window/三类 Worker 重启后实际证据保持。基线 6、双实例 30、结束 7 个应用进程；测试实例已停止。本地 114 项单元测试、编译和差异检查通过。本轮 CI 待推送后记录。
+15 组实机生命周期验收全部通过，身份为 `persona_d8722614d2e745d2b9bd2d411f85e75f` / `persona_857221f37c194923b28523cdbc48f682`，包括双实例不同字体集合、Window/三类 Worker 重启后实际证据保持。基线 6、双实例 30、结束 7 个应用进程；测试实例已停止。本地 114 项单元测试、编译和差异检查通过。实现提交 `05c20f3` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34109507645)。
 
 ## 2026-09-07：私有字体集合与旧身份重新验证
 
