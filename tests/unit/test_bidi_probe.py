@@ -16,7 +16,7 @@ from src.persona.bidi import (
     BiDiTimeoutError,
     BiDiScriptError,
 )
-from src.persona.probe import PROBE_HTML, LoopbackProbeServer, ProbeRunner
+from src.persona.probe import PROBE_HTML, LoopbackProbeServer, ProbeRunner, _worker_values
 
 
 class _FakeWebSocket:
@@ -146,6 +146,49 @@ class ProbeTests(unittest.TestCase):
         self.assertTrue(snapshot["document"])
         self.assertEqual(snapshot["worker"][0]["kind"], "worker")
         self.assertIn("User-Agent", snapshot["document"])
+
+    def test_worker_behavior_source_is_optional_and_lifecycle_safe(self) -> None:
+        behavior = "async function tbpWorkerBehavior(report) { report.probeComplete = true; return report; }"
+        with LoopbackProbeServer(worker_source=behavior) as server:
+            dedicated = urlopen(
+                f"http://127.0.0.1:{server.port}/__tbp_dedicated_worker.js", timeout=2
+            ).read().decode()
+            service = urlopen(
+                f"http://127.0.0.1:{server.port}/__tbp_service_worker.js", timeout=2
+            ).read().decode()
+        self.assertIn("tbpWorkerBehavior", dedicated)
+        self.assertIn("probeComplete", dedicated)
+        self.assertIn("e.waitUntil", service)
+        self.assertNotIn("probeComplete", _worker_values("dedicated"))
+
+    def test_read_page_waits_for_worker_behavior_when_requested(self) -> None:
+        class WorkerClient:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def evaluate(self, *_args, **_kwargs):
+                self.calls += 1
+                workers = {
+                    kind: {
+                        "kind": kind, "userAgent": "ua", "platform": "Linux",
+                        "hardwareConcurrency": 2, "timezone": "UTC", "languages": ["en-US"],
+                    }
+                    for kind in ProbeRunner.WORKER_KINDS
+                }
+                if self.calls > 1:
+                    for value in workers.values():
+                        value["probeComplete"] = True
+                return {"window": {"userAgent": "ua"}, "workers": workers}
+
+        client = WorkerClient()
+        result = asyncio.run(ProbeRunner(client, poll_interval=0.001)._read_page(
+            "ctx", 0.2, worker_graphics=True
+        ))
+        self.assertGreaterEqual(client.calls, 2)
+        self.assertTrue(all(
+            result["workers"][kind]["probeComplete"]
+            for kind in ProbeRunner.WORKER_KINDS
+        ))
 
     def test_runner_returns_raw_observations_and_checks(self) -> None:
         class FakeClient:

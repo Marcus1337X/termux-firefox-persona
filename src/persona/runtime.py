@@ -363,7 +363,8 @@ class PersonaRuntime:
                 await self.select_context(probe_context)
                 return await ProbeRunner(self.bidi, timeout=15).run(
                     probe_context, geolocation="geolocation" in self.persona.final_config,
-                    font_config=self.persona.final_config.get("fonts"))
+                    font_config=self.persona.final_config.get("fonts"),
+                    worker_graphics=bool(self.persona.final_config.get("worker_graphics")))
             finally:
                 await self.bidi.send("browsingContext.close", {"context": probe_context})
                 await self.select_context(original)

@@ -304,6 +304,140 @@ class QualificationTests(unittest.TestCase):
         tampered["observations"]["page"]["fonts"]["families"]["Probe Sans"]["direct"]["blobDecoded"]["hash"] = "ffffffff"
         self.assertFalse(qualify_probe(persona, self.snapshot, tampered, catalog=TemplateCatalog([template])).passed)
 
+    @staticmethod
+    def _font_rendering(worker=False, digest="abcd1234"):
+        return {
+            "supported": True, "nonEmpty": True, "stable": True, "exportMatches": True,
+            "metrics": {"width": 42, "ascent": 24, "descent": 7, "left": -1, "right": 41},
+            "inkPixels": 123, "hash": digest, "repeatHash": digest,
+            "dataUrlDecoded": ({"supported": False, "notApplicable": True}
+                                if worker else {"supported": True, "hash": digest}),
+            "dataUrlLength": None if worker else 1234,
+            "exportApi": "convertToBlob" if worker else "toBlob",
+            "blobDecoded": {"supported": True, "hash": digest},
+        }
+
+    @staticmethod
+    def _font_config_for_workers():
+        return {
+            "families": ["Probe Sans"],
+            "aliases": {"sans-serif": "Probe Sans", "serif": "Probe Sans",
+                         "monospace": "Probe Sans"},
+            "samples": {"Probe Sans": "Aa 上海 😀"},
+            "blocked_families": ["Blocked Font"], "policy": "whitelist",
+        }
+
+    def _font_observation_for_workers(self, worker=False, digest="abcd1234"):
+        rendered = self._font_rendering(worker, digest)
+        item = {"sample": "Aa 上海 😀", "positive": {"ok": True},
+                "direct": copy.deepcopy(rendered), "local": copy.deepcopy(rendered),
+                "metricsMatch": True, "pixelMatch": True}
+        alias_item = {"target": "Probe Sans", "generic": copy.deepcopy(rendered),
+                      "targetLocal": copy.deepcopy(rendered),
+                      "metricsMatch": True, "pixelMatch": True}
+        return {
+            "policy": "whitelist", "workerFonts": "measured" if worker else "not_verified",
+            "aliases_checked": ["sans-serif", "serif", "monospace"],
+            "missingFamily": "__TBP_MISSING_FONT__",
+            "positive": {"Probe Sans": {"ok": True}},
+            "negative": {"__TBP_MISSING_FONT__": {"failed": True},
+                         "Blocked Font": {"failed": True}},
+            "families": {"Probe Sans": item},
+            "aliases": {alias: copy.deepcopy(alias_item)
+                        for alias in ("sans-serif", "serif", "monospace")},
+        }
+
+    def test_worker_fonts_require_measured_export_and_window_consistency(self):
+        base_config = copy.deepcopy(self.template.base_config)
+        base_config["fonts"] = self._font_config_for_workers()
+        template = replace(self.template, base_config=base_config,
+                           required_capabilities=self.template.required_capabilities +
+                           ("fonts_window", "fonts_workers"))
+        config = template.expand(0, "154.0.1")
+        persona = Persona.build(seed=14, template=template, final_config=config,
+                                snapshot=self.snapshot, experimental=True)
+        probe = self._report()
+        probe["observations"]["page"]["fonts"] = self._font_observation_for_workers()
+        for realm in ("dedicated", "shared", "service"):
+            probe["observations"]["page"]["workers"][realm]["fonts"] = self._font_observation_for_workers(True)
+        report = qualify_probe(persona, self.snapshot, probe,
+                               catalog=TemplateCatalog([template]))
+        self.assertTrue(report.passed)
+        self.assertEqual(next(item for item in report.evidence
+                              if item.capability == "fonts_workers").status, "supported")
+
+        broken = copy.deepcopy(probe)
+        del broken["observations"]["page"]["workers"]["shared"]["fonts"]
+        failed = qualify_probe(persona, self.snapshot, broken,
+                               catalog=TemplateCatalog([template]))
+        self.assertFalse(failed.passed)
+        self.assertEqual(next(item for item in failed.evidence
+                              if item.capability == "fonts_workers").status, "partial")
+
+        tampered = copy.deepcopy(probe)
+        tampered["observations"]["page"]["workers"]["dedicated"]["fonts"]["families"]["Probe Sans"]["direct"]["hash"] = "ffffffff"
+        self.assertFalse(qualify_probe(persona, self.snapshot, tampered,
+                                       catalog=TemplateCatalog([template])).passed)
+        for key, value in (("blobDecoded", {}), ("exportApi", "toBlob"),
+                           ("dataUrlDecoded", {"supported": False})):
+            with self.subTest(export_field=key):
+                broken = copy.deepcopy(probe)
+                broken["observations"]["page"]["workers"]["service"]["fonts"]["families"]["Probe Sans"]["direct"][key] = value
+                self.assertFalse(qualify_probe(persona, self.snapshot, broken,
+                                               catalog=TemplateCatalog([template])).passed)
+        different = copy.deepcopy(probe)
+        different["observations"]["page"]["workers"]["dedicated"]["fonts"] = self._font_observation_for_workers(True, "ffff1111")
+        self.assertFalse(qualify_probe(persona, self.snapshot, different,
+                                       catalog=TemplateCatalog([template])).passed)
+
+    @staticmethod
+    def _webgl_observation_for_workers():
+        behavior = {
+            "passed": True, "compile": True, "link": True, "errors": [],
+            "triangle": {"compile": True, "link": True, "nonEmpty": True,
+                          "readback": True, "exactRed": True,
+                          "rgba": [255, 0, 0, 255]},
+            "framebuffer": {"rgba8": True, "complete": True, "readback": True,
+                            "exactGreen": True, "rgba": [0, 255, 0, 255]},
+        }
+        context = {"supported": True, "unmaskedVendor": "Mesa",
+                   "unmaskedRenderer": "llvmpipe (LLVM 18.1.8, 256 bits)",
+                   "behavior": copy.deepcopy(behavior)}
+        return {"supported": True, "unmaskedVendor": "Mesa",
+                "unmaskedRenderer": "llvmpipe (LLVM 18.1.8, 256 bits)",
+                "webgl1": copy.deepcopy(context), "webgl2": copy.deepcopy(context),
+                "behavior": {"webgl1": copy.deepcopy(behavior),
+                              "webgl2": copy.deepcopy(behavior)}}
+
+    def test_worker_webgl_requires_all_contexts_and_exact_pixels(self):
+        base_config = copy.deepcopy(self.template.base_config)
+        base_config["graphics"] = {
+            "identity_class": "native-linux-firefox", "hardware_class": "software",
+            "execution_backend": "software", "context_backend": "glx",
+            "vendor": "Mesa", "renderer": "llvmpipe, or similar",
+            "webgl1": True, "webgl2": True,
+        }
+        template = replace(self.template, base_config=base_config,
+                           required_capabilities=self.template.required_capabilities +
+                           ("webgl_window", "webgl_workers"))
+        config = template.expand(0, "154.0.1")
+        persona = Persona.build(seed=15, template=template, final_config=config,
+                                snapshot=self.snapshot, experimental=True)
+        probe = self._report()
+        probe["observations"]["page"]["webgl"] = self._webgl_observation_for_workers()
+        for realm in ("dedicated", "shared", "service"):
+            probe["observations"]["page"]["workers"][realm]["webgl"] = self._webgl_observation_for_workers()
+        self.assertTrue(qualify_probe(persona, self.snapshot, probe,
+                                      catalog=TemplateCatalog([template])).passed)
+        broken = copy.deepcopy(probe)
+        broken["observations"]["page"]["workers"]["service"]["webgl"]["webgl2"]["behavior"]["framebuffer"]["rgba"] = [255, 0, 0, 255]
+        broken["observations"]["page"]["workers"]["service"]["webgl"]["behavior"]["webgl2"]["framebuffer"]["rgba"] = [255, 0, 0, 255]
+        failed = qualify_probe(persona, self.snapshot, broken,
+                               catalog=TemplateCatalog([template]))
+        self.assertFalse(failed.passed)
+        self.assertEqual(next(item for item in failed.evidence
+                              if item.capability == "webgl_workers").status, "partial")
+
 
 if __name__ == "__main__":
     unittest.main()

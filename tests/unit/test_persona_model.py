@@ -405,5 +405,66 @@ class FontTemplateTests(unittest.TestCase):
             PersonaTemplate.from_mapping(data)
 
 
+class WorkerGraphicsTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.template = TemplateCatalog.default().get("linux-firefox-workers-glx-v1")
+
+    def test_worker_family_requires_all_contexts_and_both_capabilities(self):
+        self.assertEqual(self.template.version, "1.0.0")
+        self.assertEqual(self.template.status, "candidate")
+        self.assertEqual(len(self.template.variants), 4)
+        self.assertIn("fonts_workers", self.template.required_capabilities)
+        self.assertIn("webgl_workers", self.template.required_capabilities)
+        self.assertEqual(len(self.template.required_capabilities), 10)
+        for index in range(4):
+            config = self.template.expand(index, "154.0.1")
+            self.assertEqual(config["worker_graphics"], {
+                "contexts": ["dedicated", "shared", "service"], "fonts": True, "webgl": True})
+            self.assertEqual(config["graphics"]["execution_backend"], "software")
+            self.assertEqual(config["fonts"]["policy"], "whitelist")
+        snapshot = CapabilitySnapshot(environment={"firefox_version": "154.0.1"}, capabilities={})
+        with self.assertRaises(NoEligiblePersonaError):
+            PersonaGenerator(TemplateCatalog([self.template]), snapshot,
+                             runtime_browser_version="154.0.1").create(seed=1)
+
+    def test_partial_worker_policy_cannot_silently_reduce_required_scope(self):
+        cases = [("contexts", ["dedicated"]), ("contexts", ["dedicated", "shared", "shared"]),
+                 ("contexts", "dedicated,shared,service"), ("contexts", ["window", "shared", "service"]),
+                 ("fonts", False), ("fonts", 1), ("webgl", False), ("webgl", "true"),
+                 ("extra", True)]
+        for key, value in cases:
+            with self.subTest(key=key, value=value):
+                data = self.template.to_dict()
+                data["base_config"]["worker_graphics"][key] = value
+                with self.assertRaisesRegex(TemplateError, "worker_graphics"):
+                    PersonaTemplate.from_mapping(data)
+        data = self.template.to_dict()
+        del data["base_config"]["worker_graphics"]
+        with self.assertRaisesRegex(TemplateError, "requires worker_graphics"):
+            PersonaTemplate.from_mapping(data)
+
+    def test_worker_template_keeps_font_region_and_backend_constraints(self):
+        data = self.template.to_dict()
+        del data["variants"][0]["fonts"]
+        with self.assertRaisesRegex(TemplateError, "requires fonts"):
+            PersonaTemplate.from_mapping(data)
+        data = self.template.to_dict()
+        data["variants"][0]["locale"]["timezone"] = "America/New_York"
+        with self.assertRaisesRegex(TemplateError, "locale region"):
+            PersonaTemplate.from_mapping(data)
+        data = self.template.to_dict()
+        data["base_config"]["graphics"]["context_backend"] = "egl"
+        with self.assertRaisesRegex(TemplateError, "software GLX"):
+            PersonaTemplate.from_mapping(data)
+
+    def test_persisted_worker_persona_cannot_drop_worker_scope(self):
+        persona = PersonaGenerator(TemplateCatalog([self.template]),
+                                   runtime_browser_version="154.0.1").create(seed=1, experimental=True)
+        data = persona.to_dict()
+        del data["final_config"]["worker_graphics"]
+        with self.assertRaisesRegex(TemplateError, "requires worker_graphics"):
+            Persona.from_mapping(data)
+
+
 if __name__ == "__main__":
     unittest.main()

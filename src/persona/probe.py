@@ -17,8 +17,14 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 
-def _worker_values(kind: str) -> str:
-    """Return a worker script for the requested worker kind."""
+def _worker_values(kind: str, worker_source: str | None = None) -> str:
+    """Return a worker script for the requested worker kind.
+
+    ``worker_source`` is an optional behavior probe which defines an async
+    ``tbpWorkerBehavior(report)`` function.  The default identity-only script
+    remains unchanged so ordinary probes do not pay for OffscreenCanvas or
+    worker font/WebGL work.
+    """
 
     source = r'''
 function tbpWorkerValues(kind) {
@@ -35,6 +41,55 @@ function tbpWorkerValues(kind) {
   };
 }
 '''
+    if worker_source:
+        behavior = """
+async function tbpWorkerResult(kind) {
+  const report = tbpWorkerValues(kind);
+  try {
+    return await tbpWorkerBehavior(report);
+  } catch (error) {
+    report.probeError = String(error && error.message ? error.message : error);
+    report.probeComplete = true;
+    return report;
+  }
+}
+""" + worker_source
+        # The behavior function is intentionally appended after the result
+        # wrapper; function declarations are hoisted and this also keeps the
+        # generated source easy to inspect in diagnostics.
+        if kind == "dedicated":
+            return source + behavior + """
+tbpWorkerResult('dedicated').then(function(report) { postMessage(report); }).catch(function(error) {
+  const report = tbpWorkerValues('dedicated');
+  report.probeError = String(error); report.probeComplete = true; postMessage(report);
+});
+"""
+        if kind == "shared":
+            return source + behavior + """
+onconnect = function(e) {
+  const p = e.ports[0]; p.start();
+  tbpWorkerResult('shared').then(function(report) { p.postMessage(report); }).catch(function(error) {
+    const report = tbpWorkerValues('shared');
+    report.probeError = String(error); report.probeComplete = true; p.postMessage(report);
+  });
+};
+"""
+        return source + behavior + r'''
+self.addEventListener('install', function(e) { self.skipWaiting(); });
+self.addEventListener('activate', function(e) {
+  e.waitUntil(self.clients.claim());
+});
+self.addEventListener('message', function(e) {
+  if (!e.source) return;
+  const done = tbpWorkerResult('service').then(function(report) {
+    e.source.postMessage(report);
+  }).catch(function(error) {
+    const report = tbpWorkerValues('service');
+    report.probeError = String(error); report.probeComplete = true; e.source.postMessage(report);
+  });
+  if (e.waitUntil) e.waitUntil(done);
+});
+'''
     if kind == "dedicated":
         return source + "postMessage(tbpWorkerValues('dedicated'));"
     if kind == "shared":
@@ -50,74 +105,7 @@ self.addEventListener('message', function(e) {
 '''
 
 
-PROBE_HTML = r'''<!doctype html>
-<meta charset="utf-8">
-<title>Termux Browser Pilot capability probe</title>
-<script>
-(function() {
-  function timezone() {
-    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; }
-    catch (_) { return null; }
-  }
-  function windowValues() {
-    return {
-      userAgent: navigator.userAgent || null,
-      platform: navigator.platform || null,
-      oscpu: navigator.oscpu || null,
-      appVersion: navigator.appVersion || null,
-      hardwareConcurrency: navigator.hardwareConcurrency || null,
-      languages: Array.from(navigator.languages || []),
-      language: navigator.language || null,
-      timezone: timezone()
-    };
-  }
-  function displayValues() {
-    let orientation = null;
-    try {
-      orientation = screen.orientation ? {
-        type: screen.orientation.type || null,
-        angle: screen.orientation.angle
-      } : null;
-    } catch (_) {}
-    return {
-      screen: {
-        width: screen.width, height: screen.height,
-        availWidth: screen.availWidth, availHeight: screen.availHeight,
-        colorDepth: screen.colorDepth, pixelDepth: screen.pixelDepth
-      },
-      viewport: {width: innerWidth, height: innerHeight,
-                 outerWidth: outerWidth, outerHeight: outerHeight},
-      devicePixelRatio: devicePixelRatio,
-      screenX: screenX, screenY: screenY,
-      orientation: orientation
-    };
-  }
-  function appearanceValues() {
-    function matches(query) {
-      try { return matchMedia(query).matches; } catch (_) { return null; }
-    }
-    return {
-      colorScheme: matches('(prefers-color-scheme: dark)') === true ? 'dark' :
-                   (matches('(prefers-color-scheme: light)') === true ? 'light' : null),
-      reducedMotion: matches('(prefers-reduced-motion: reduce)'),
-      contrast: matches('(prefers-contrast: more)') === true ? 'more' :
-                (matches('(prefers-contrast: less)') === true ? 'less' :
-                 (matches('(prefers-contrast: custom)') === true ? 'custom' : 'no-preference')),
-      forcedColors: matches('(forced-colors: active)')
-    };
-  }
-  function inputValues() {
-    function matches(query) {
-      try { return matchMedia(query).matches; } catch (_) { return null; }
-    }
-    return {
-      pointer: matches('(pointer: fine)') ? 'fine' :
-               (matches('(pointer: coarse)') ? 'coarse' : 'none'),
-      hover: matches('(hover: hover)'),
-      maxTouchPoints: navigator.maxTouchPoints || 0
-    };
-  }
-  function webglValues() {
+WEBGL_PROBE_SOURCE = r'''  function webglValues(makeCanvas) {
     function precision(gl, shaderType, precisionType) {
       try {
         const value = gl.getShaderPrecisionFormat(shaderType, precisionType);
@@ -126,7 +114,7 @@ PROBE_HTML = r'''<!doctype html>
       } catch (_) { return null; }
     }
     function inspect(kind) {
-      const canvas = document.createElement('canvas');
+      const canvas = makeCanvas ? makeCanvas() : document.createElement('canvas');
       canvas.width = 2; canvas.height = 2;
       let contextCreationError = null;
       canvas.addEventListener('webglcontextcreationerror', function(e) {
@@ -281,6 +269,77 @@ PROBE_HTML = r'''<!doctype html>
       behavior: {webgl1: webgl1.behavior, webgl2: webgl2.behavior}
     };
   }
+'''
+
+
+PROBE_HTML = r'''<!doctype html>
+<meta charset="utf-8">
+<title>Termux Browser Pilot capability probe</title>
+<script>
+(function() {
+  function timezone() {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; }
+    catch (_) { return null; }
+  }
+  function windowValues() {
+    return {
+      userAgent: navigator.userAgent || null,
+      platform: navigator.platform || null,
+      oscpu: navigator.oscpu || null,
+      appVersion: navigator.appVersion || null,
+      hardwareConcurrency: navigator.hardwareConcurrency || null,
+      languages: Array.from(navigator.languages || []),
+      language: navigator.language || null,
+      timezone: timezone()
+    };
+  }
+  function displayValues() {
+    let orientation = null;
+    try {
+      orientation = screen.orientation ? {
+        type: screen.orientation.type || null,
+        angle: screen.orientation.angle
+      } : null;
+    } catch (_) {}
+    return {
+      screen: {
+        width: screen.width, height: screen.height,
+        availWidth: screen.availWidth, availHeight: screen.availHeight,
+        colorDepth: screen.colorDepth, pixelDepth: screen.pixelDepth
+      },
+      viewport: {width: innerWidth, height: innerHeight,
+                 outerWidth: outerWidth, outerHeight: outerHeight},
+      devicePixelRatio: devicePixelRatio,
+      screenX: screenX, screenY: screenY,
+      orientation: orientation
+    };
+  }
+  function appearanceValues() {
+    function matches(query) {
+      try { return matchMedia(query).matches; } catch (_) { return null; }
+    }
+    return {
+      colorScheme: matches('(prefers-color-scheme: dark)') === true ? 'dark' :
+                   (matches('(prefers-color-scheme: light)') === true ? 'light' : null),
+      reducedMotion: matches('(prefers-reduced-motion: reduce)'),
+      contrast: matches('(prefers-contrast: more)') === true ? 'more' :
+                (matches('(prefers-contrast: less)') === true ? 'less' :
+                 (matches('(prefers-contrast: custom)') === true ? 'custom' : 'no-preference')),
+      forcedColors: matches('(forced-colors: active)')
+    };
+  }
+  function inputValues() {
+    function matches(query) {
+      try { return matchMedia(query).matches; } catch (_) { return null; }
+    }
+    return {
+      pointer: matches('(pointer: fine)') ? 'fine' :
+               (matches('(pointer: coarse)') ? 'coarse' : 'none'),
+      hover: matches('(hover: hover)'),
+      maxTouchPoints: navigator.maxTouchPoints || 0
+    };
+  }
+__TBP_WEBGL_SOURCE__
   function canvasValues() {
     const c = document.createElement('canvas');
     c.width = 240; c.height = 60;
@@ -360,15 +419,16 @@ PROBE_HTML = r'''<!doctype html>
     return true;
   };
 })();
-</script>'''
+</script>'''.replace('__TBP_WEBGL_SOURCE__', WEBGL_PROBE_SOURCE)
 
 
 class _ProbeState:
-    def __init__(self) -> None:
+    def __init__(self, worker_source: str | None = None) -> None:
         self.lock = threading.Lock()
         self.document_headers: dict[str, str] | None = None
         self.worker_headers: list[dict[str, Any]] = []
         self.requests: list[dict[str, Any]] = []
+        self.worker_source = worker_source
 
     def record(self, path: str, headers: Mapping[str, str]) -> None:
         clean = {str(k): str(v) for k, v in headers.items()}
@@ -425,11 +485,11 @@ def _handler_for(state: _ProbeState):
             if path in {"/", "/probe.html"}:
                 body, content_type = PROBE_HTML.encode(), "text/html; charset=utf-8"
             elif path == "/__tbp_dedicated_worker.js":
-                body, content_type = _worker_values("dedicated").encode(), "text/javascript"
+                body, content_type = _worker_values("dedicated", state.worker_source).encode(), "text/javascript"
             elif path == "/__tbp_shared_worker.js":
-                body, content_type = _worker_values("shared").encode(), "text/javascript"
+                body, content_type = _worker_values("shared", state.worker_source).encode(), "text/javascript"
             elif path == "/__tbp_service_worker.js":
-                body, content_type = _worker_values("service").encode(), "text/javascript"
+                body, content_type = _worker_values("service", state.worker_source).encode(), "text/javascript"
             else:
                 self.send_error(404)
                 return
@@ -446,8 +506,8 @@ def _handler_for(state: _ProbeState):
 class LoopbackProbeServer:
     """Threaded loopback HTTP server used by :class:`ProbeRunner`."""
 
-    def __init__(self) -> None:
-        self.state = _ProbeState()
+    def __init__(self, *, worker_source: str | None = None) -> None:
+        self.state = _ProbeState(worker_source=worker_source)
         self._server: _ProbeHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -505,6 +565,32 @@ class ProbeRunner:
         self.timeout = float(timeout)
         self.poll_interval = float(poll_interval)
 
+    @staticmethod
+    def _worker_probe_source(font_config: Mapping[str, Any] | None) -> str:
+        """Build the optional worker font/OffscreenCanvas/WebGL behavior code."""
+
+        font_expression = ProbeRunner.font_probe_expression(font_config or {}, worker=True)
+        return WEBGL_PROBE_SOURCE + f"""
+  async function tbpWorkerBehavior(report) {{
+    try {{
+      report.fonts = await {font_expression};
+    }} catch (error) {{
+      report.fonts = {{error: String(error && error.message ? error.message : error), workerFonts: 'error'}};
+    }}
+    try {{
+      if (typeof globalThis.OffscreenCanvas !== 'function') {{
+        report.webgl = {{supported: false, reason: 'OffscreenCanvas unavailable'}};
+      }} else {{
+        report.webgl = webglValues(() => new globalThis.OffscreenCanvas(2, 2));
+      }}
+    }} catch (error) {{
+      report.webgl = {{supported: false, reason: String(error && error.message ? error.message : error)}};
+    }}
+    report.probeComplete = true;
+    return report;
+  }}
+"""
+
     async def run(
         self,
         context: str,
@@ -512,9 +598,11 @@ class ProbeRunner:
         timeout: float | None = None,
         geolocation: bool = False,
         font_config: Mapping[str, Any] | None = None,
+        worker_graphics: bool = False,
     ) -> dict[str, Any]:
         wait_timeout = self.timeout if timeout is None else float(timeout)
-        server = LoopbackProbeServer().start()
+        worker_source = self._worker_probe_source(font_config) if worker_graphics else None
+        server = LoopbackProbeServer(worker_source=worker_source).start()
         origin = f"http://127.0.0.1:{server.port}"
         try:
             await self.client.navigate(
@@ -523,7 +611,7 @@ class ProbeRunner:
                 wait="complete",
                 timeout=wait_timeout,
             )
-            page = await self._read_page(context, wait_timeout)
+            page = await self._read_page(context, wait_timeout, worker_graphics=worker_graphics)
             if geolocation:
                 page = dict(page)
                 page["geolocation"] = await self._run_geolocation(
@@ -680,25 +768,24 @@ class ProbeRunner:
         normalized["missing_family"] = f"__TBP_MISSING_FONT_{digest}__"
         return normalized
 
-    async def _run_font_probe(
-        self,
-        context: str,
-        font_config: Mapping[str, Any],
-        timeout: float,
-    ) -> dict[str, Any]:
-        """Probe configured local fonts without changing persistent page style."""
-
-        config = self._normalize_font_config(font_config)
+    @staticmethod
+    def font_probe_expression(font_config: Mapping[str, Any], *, worker: bool = False) -> str:
+        config = ProbeRunner._normalize_font_config(font_config)
         config_json = json.dumps(config, ensure_ascii=False, separators=(",", ":"))
-        expression = f"""(async() => {{
+        return f"""(async() => {{
           const config = {config_json};
+          const worker = {str(worker).lower()};
+          if (worker && (!globalThis.OffscreenCanvas || !globalThis.fonts || !globalThis.FontFace))
+            return {{error:'Worker font APIs unavailable', workerFonts:'unsupported'}};
+          const fontSet = worker ? globalThis.fonts : document.fonts;
+          const createCanvas = () => worker ? new OffscreenCanvas(512,128) : document.createElement('canvas');
           const families = Array.from(new Set(config.families || []));
           const blocked = Array.from(new Set(config.blocked_families || []));
           const positive = {{}}; const loaded = {{}}; const negative = {{}};
           const temporaryFaces = [];
           function errorText(error) {{ return error && error.message ? String(error.message) : String(error); }}
           async function loadLocal(family, index) {{
-            if (!window.FontFace) return {{ok:false, status:'unsupported', error:'FontFace unavailable'}};
+            if (!globalThis.FontFace) return {{ok:false, status:'unsupported', error:'FontFace unavailable'}};
             let face = null;
             try {{
               const localName = config.local_names[family] || family;
@@ -734,16 +821,16 @@ class ProbeRunner:
             return (h >>> 0).toString(16).padStart(8, '0');
           }}
           async function decode(blob) {{
-            if (!blob || !window.createImageBitmap) return {{supported:false}};
+            if (!blob || !globalThis.createImageBitmap) return {{supported:false}};
             try {{
               const bitmap = await createImageBitmap(blob);
-              const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height;
+              const canvas = createCanvas(); canvas.width = bitmap.width; canvas.height = bitmap.height;
               const ctx = canvas.getContext('2d'); ctx.drawImage(bitmap, 0, 0); bitmap.close();
               return {{supported:true, hash:hash(ctx.getImageData(0,0,canvas.width,canvas.height).data)}};
             }} catch (error) {{ return {{supported:false, error:errorText(error)}}; }}
           }}
           async function render(family, text, faceName, generic) {{
-            const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 128;
+            const canvas = createCanvas(); canvas.width = 512; canvas.height = 128;
             const ctx = canvas.getContext('2d');
             if (!ctx) return {{supported:false, error:'2d context unavailable'}};
             // Use an opaque background so PNG encode/decode preserves the
@@ -763,20 +850,20 @@ class ProbeRunner:
               if (source[i] !== 16 || source[i + 1] !== 32 || source[i + 2] !== 48 || source[i + 3] !== 255) inkPixels++;
             }}
             const nonEmpty = inkPixels > 0;
-            const again = document.createElement('canvas'); again.width = canvas.width; again.height = canvas.height;
+            const again = createCanvas(); again.width = canvas.width; again.height = canvas.height;
             const againCtx = again.getContext('2d'); againCtx.fillStyle = '#102030'; againCtx.fillRect(0,0,again.width,again.height);
             againCtx.fillStyle = '#f0d050';
             againCtx.font = ctx.font; againCtx.fillText(text, 8, 72);
             const secondPixels = againCtx.getImageData(0,0,again.width,again.height).data;
             const secondHash = hash(secondPixels);
-            const dataUrl = canvas.toDataURL('image/png');
-            const dataDecoded = await decode(await fetch(dataUrl).then(response => response.blob()));
-            const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+            const dataUrl = worker ? null : canvas.toDataURL('image/png');
+            const dataDecoded = worker ? {{supported:false, notApplicable:true}} : await decode(await fetch(dataUrl).then(response => response.blob()));
+            const blob = worker ? await canvas.convertToBlob({{type:'image/png'}}) : await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
             const blobDecoded = await decode(blob);
             return {{supported:true, metrics:measured, hash:firstHash, repeatHash:secondHash,
-                    inkPixels:inkPixels, nonEmpty:nonEmpty, stable:firstHash === secondHash, dataUrlLength:dataUrl.length,
+                    inkPixels:inkPixels, nonEmpty:nonEmpty, stable:firstHash === secondHash, dataUrlLength:dataUrl ? dataUrl.length : null, exportApi:worker ? 'convertToBlob' : 'toBlob',
                     dataUrlDecoded:dataDecoded, blobDecoded:blobDecoded,
-                    exportMatches: nonEmpty && dataDecoded.hash === firstHash && blobDecoded.hash === firstHash}};
+                    exportMatches: nonEmpty && (worker || dataDecoded.hash === firstHash) && blobDecoded.hash === firstHash}};
           }}
           const genericAliases = new Set(['sans-serif', 'serif', 'monospace']);
           const aliasesChecked = Object.keys(config.aliases || {{}})
@@ -784,12 +871,12 @@ class ProbeRunner:
           const observations = {{families:{{}}, aliases:{{}}, aliases_checked:aliasesChecked,
                                     positive:positive, negative:negative,
                                     blockedFamilies:blocked, missingFamily:config.missing_family,
-                                    workerFonts:'not_verified', policy:config.policy}};
+                                    workerFonts:worker ? 'measured' : 'not_verified', policy:config.policy}};
           for (const family of families) {{
             const sample = Object.prototype.hasOwnProperty.call(config.samples || {{}}, family)
               ? String(config.samples[family]) : 'Aa 0123';
             const face = loaded[family];
-            if (face) document.fonts.add(face);
+            if (face) fontSet.add(face);
             try {{
               const localName = face ? face.family : '__tbpProbeMissing';
               const direct = await render(family, sample, null, false);
@@ -797,32 +884,48 @@ class ProbeRunner:
               observations.families[family] = {{sample:sample, positive:positive[family], direct:direct, local:local,
                 metricsMatch: !!(direct.metrics && local.metrics && direct.metrics.width === local.metrics.width),
                 pixelMatch: !!(direct.hash && local.hash && direct.hash === local.hash)}};
-            }} finally {{ if (face) document.fonts.delete(face); }}
+            }} finally {{ if (face) fontSet.delete(face); }}
           }}
           for (const alias of aliasesChecked) {{
             const target = config.aliases[alias];
             const sample = Object.prototype.hasOwnProperty.call(config.samples || {{}}, target)
               ? String(config.samples[target]) : 'Aa 0123';
             const face = loaded[target];
-            if (face) document.fonts.add(face);
+            if (face) fontSet.add(face);
             try {{
               const generic = await render(alias, sample, null, true);
               const targetLocal = face ? await render(target, sample, face.family, false) : {{supported:false}};
               observations.aliases[alias] = {{target:target, generic:generic, targetLocal:targetLocal,
                 metricsMatch: !!(generic.metrics && targetLocal.metrics && generic.metrics.width === targetLocal.metrics.width),
                 pixelMatch: !!(generic.hash && targetLocal.hash && generic.hash === targetLocal.hash)}};
-            }} finally {{ if (face) document.fonts.delete(face); }}
+            }} finally {{ if (face) fontSet.delete(face); }}
           }}
-          for (const face of temporaryFaces) {{ try {{ document.fonts.delete(face); }} catch (_) {{}} }}
+          for (const face of temporaryFaces) {{ try {{ fontSet.delete(face); }} catch (_) {{}} }}
           return observations;
         }})()"""
+
+    async def _run_font_probe(
+        self,
+        context: str,
+        font_config: Mapping[str, Any],
+        timeout: float,
+    ) -> dict[str, Any]:
+        """Probe configured local fonts without changing persistent page style."""
+
+        expression = self.font_probe_expression(font_config)
         try:
             result = await self.client.evaluate(context, expression, timeout=timeout)
             return result if isinstance(result, Mapping) else {"error": "font probe returned non-object"}
         except Exception as exc:
-            return {"error": str(exc), "workerFonts": "not_verified", "config": config}
+            return {"error": str(exc), "workerFonts": "not_verified", "config": dict(font_config)}
 
-    async def _read_page(self, context: str, timeout: float) -> dict[str, Any]:
+    async def _read_page(
+        self,
+        context: str,
+        timeout: float,
+        *,
+        worker_graphics: bool = False,
+    ) -> dict[str, Any]:
         deadline = asyncio.get_running_loop().time() + timeout
         expression = "window.__tbpProbe || null"
         last: Any = None
@@ -833,7 +936,14 @@ class ProbeRunner:
                 last = {"error": str(exc)}
             if isinstance(last, Mapping) and last.get("window"):
                 workers = last.get("workers") or {}
-                if all(kind in workers for kind in self.WORKER_KINDS):
+                complete = all(kind in workers for kind in self.WORKER_KINDS)
+                if worker_graphics:
+                    complete = complete and all(
+                        isinstance(workers.get(kind), Mapping)
+                        and workers[kind].get("probeComplete") is True
+                        for kind in self.WORKER_KINDS
+                    )
+                if complete:
                     return dict(last)
             if asyncio.get_running_loop().time() >= deadline:
                 return dict(last) if isinstance(last, Mapping) else {"error": "probe timeout"}

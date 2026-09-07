@@ -1,5 +1,19 @@
 # 开发与本机验收记录
 
+## 2026-09-07：Worker 字体与 OffscreenCanvas/WebGL
+
+新增 `linux-firefox-workers-glx-v1/1.0.0`，四个候选组合全部取得本机资格，当前合格组合为 24 个。旧 20 个组合及其资格范围保持不变，没有修改系统字体或图形环境。
+
+- 复用 Window 字体和 GL 绘制代码，Worker 使用原生 FontFace/self.fonts/OffscreenCanvas，不覆盖页面返回值。
+- Dedicated、Shared、Service Worker 各自上报最终完成结果；Service Worker 使用 waitUntil 保持异步探针生命周期。默认旧模板不启动额外 Worker 图形探针。
+- 字体要求正反向本地加载、通用别名、direct/local 与 Window 的实际像素和完整 TextMetrics 一致；convertToBlob 的 PNG 解码必须匹配。Worker 的 toDataURL 明确不适用。
+- WebGL1/2 分别要求实际 shader 编译/链接、红色三角形和绿色 RGBA8 framebuffer 读回，以及同 Window 的 Mesa llvmpipe 身份。完整 precision/limits/extensions 与核显兼容仍未完成。
+- 单测覆盖缺失 Worker、伪造 hash、PNG 导出缺失/错误与错误 GL 像素，失败不能进入严格池。
+
+四个 bootstrap 身份：`persona_c5cb84b895fdea132e118e6d0a5796dd`、`persona_6286501b9d759893f4a86a448d08f426`、`persona_f01241f647427a4e51b2d7903006ff5b`、`persona_1181cb73bd318ad46a9d81deb7840dab`。
+
+15 组实机生命周期验收全部通过，身份为 `persona_d8722614d2e745d2b9bd2d411f85e75f` / `persona_857221f37c194923b28523cdbc48f682`，包括双实例不同字体集合、Window/三类 Worker 重启后实际证据保持。基线 6、双实例 30、结束 7 个应用进程；测试实例已停止。本地 114 项单元测试、编译和差异检查通过。本轮 CI 待推送后记录。
+
 ## 2026-09-07：私有字体集合与旧身份重新验证
 
 新增 `linux-firefox-fonts-glx-v1`：中文/英文 × 明暗四个组合均已通过本机完整资格检查，合格组合增至 20 个。明色使用 DejaVu Sans/Serif/Sans Mono、Noto Sans CJK SC、Noto Color Emoji；暗色将 DejaVu Serif 换为 Noto Serif CJK SC。没有安装 Liberation。

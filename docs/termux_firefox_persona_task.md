@@ -2,13 +2,13 @@
 
 ## 本轮进度更新（2026-09-07）
 
-本地 106 项单元测试通过。新增字体模板四个组合全部通过实机 bootstrap；原 16 个组合在补全字体环境快照后，经显式 requalify 全部重新通过，当前合格组合共 20 个。
+本地 114 项单元测试通过。新增 `linux-firefox-workers-glx-v1` 四个组合全部完成实机资格验证；原有 20 个组合保持有效，当前合格池共 24 个组合。
 
-字体实现包含两套真实 DejaVu/Noto/Emoji 集合、独立 Fontconfig 目录与缓存、TTC 字面筛选、CSS local() 正反向加载、三个通用别名、Canvas 像素、TextMetrics 和两种 PNG 导出解码检查。字体模板的 12 组实机生命周期验收全部通过：双实例可见集合及同文像素/测量不同，重启结果保持，标签页、脚本弹窗与 Ctrl+N 继承。两份截图已检查；双实例应用进程数为 30，测试实例均已停止。完整探针后 Firefox 会保留额外内容进程，验收在单实例资格检查后重启原 profile，再进入双实例阶段，不提高预算。
+新模板要求 Dedicated、Shared、Service Worker 分别通过本地字体正反向加载、三个通用别名、OffscreenCanvas 文字像素与 TextMetrics、convertToBlob PNG 解码，以及 WebGL1/2 shader/红色像素/RGBA8 framebuffer 绿色像素检查。各 Worker 字体渲染及图形身份还必须与 Window 一致。Worker 不具备的 toDataURL 明确标为不适用，缺失任一 Worker 证据不授予完整资格。
 
-新增 requalify 命令，保持原 ID、种子、最终配置和 profile；验证成功、进程停止且环境稳定后才更新资格。实机已验证旧严格身份保留，失败/取消/并发/版本不兼容及环境再次变化有单测覆盖。实现提交 `20bc86d` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34108013570)。
+15 组实机生命周期验收全部通过，包括不同字体的双实例隔离、原生输入与截图、标签页/弹窗/Ctrl+N 继承、重启后 Window 与三类 Worker 的实际像素/测量/GL 结果保持。双实例应用进程数为 30，测试实例全部停止。完整探针在单实例阶段执行，再重启原 profile 进入双实例阶段，不提高预算。本轮 CI 待推送后记录。
 
-地理位置、四项外观及软件 GLX WebGL1/2 的 shader/像素/FBO 资格继续有效。Liberation、Worker 字体、Worker/OffscreenCanvas WebGL、完整 graphics precision/limits/extensions、核显身份、媒体/网络及标签页拖出仍未完成。完整第一批和第二批尚未全部完成。下列勾选仅表示明确子项已有证据，综合条目保持其原验收门槛。
+此前地理位置、四项外观、私有字体及保留 ID/种子/最终配置/profile 的 requalify 继续有效。Worker 图形探针仅在新模板启用，旧模板保持原资格范围。Liberation、完整 graphics precision/limits/extensions、核显身份、媒体/网络及标签页拖出仍未完成，完整第一批和第二批尚未全部完成。下列勾选只表示明确范围内已有实机证据。
 
 ## 目标与范围
 

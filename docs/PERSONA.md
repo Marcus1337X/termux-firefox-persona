@@ -94,6 +94,18 @@ python -m tests.persona_live --template linux-firefox-fonts-glx-v1
 
 字体资格检查 CSS `local()` 的正反向加载、三个通用字体别名、实际 Canvas 像素与 TextMetrics，以及 `toDataURL`/`toBlob` 导出后解码的像素一致性。字体文件的完整名称与 family 名称分别保存；不会用不存在的字体名称冒充支持。未启用 Firefox 的 `font.system.whitelist`，因为它会禁用所有 CSS `local()` 来源；集合由私有 Fontconfig 约束。Worker 字体尚未验证。
 
+`linux-firefox-workers-glx-v1` 进一步要求 Dedicated、Shared、Service Worker 分别通过字体和 WebGL 检查。它沿用四个地区/外观/字体组合，新增两个必需资格 `fonts_workers` 和 `webgl_workers`。旧模板的验证范围保持不变。
+
+```sh
+python cli.py persona bootstrap --template linux-firefox-workers-glx-v1
+python cli.py persona create --template linux-firefox-workers-glx-v1 --start
+python -m tests.persona_live --template linux-firefox-workers-glx-v1
+```
+
+Worker 使用真实 `FontFace`、`self.fonts` 和 `OffscreenCanvas`，检查正反向本地字体加载、三个通用别名、实际文字像素/TextMetrics 与 Window 一致，并验证 `convertToBlob()` 导出的 PNG 解码结果。Worker 没有 `toDataURL()`，该项明确记录为不适用。三类 Worker 的 WebGL1/2 各自执行 shader 编译/链接、红色像素和绿色 RGBA8 framebuffer 读回，并核对实际图形身份与 Window 一致。接口缺失、超时或任一上下文证据失败，都不能获得完整资格。
+
+完整 Worker 探针仅在新模板显式启用。Service Worker 的异步验证使用 `event.waitUntil()` 保持生命周期，页面等待各 Worker 的最终结果。生命周期验收还比较重启前后的 Worker 字体/图形证据；双实例阶段使用轻量检查，完整探针在单实例阶段执行。规范依据：[Worker 字体来源](https://drafts.csswg.org/css-font-loading/#font-face-source)、[OffscreenCanvas](https://html.spec.whatwg.org/multipage/canvas.html#the-offscreencanvas-interface)。
+
 资格报告只覆盖模板列出的必需能力；外观、输入、Canvas 和 Audio 的额外观测不等于完整第二批验收。核显模板仍是候选；只修改 renderer 名称不能获得核显资格。`software` 为默认执行后端，`native` 仅表示不强制软件渲染，不能自动等同于手机 GPU 加速。
 
 配置、资格、profile 和日志默认存于 Termux 私有目录 `~/.tbp/personas`。`--root` 可指定另一个私有测试目录，放在子命令之前。共享存储不能用作 profile 根目录。Firefox/后端/字体环境变化会使原资格失效，不会静默修改已保存身份。

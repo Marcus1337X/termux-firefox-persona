@@ -25,11 +25,13 @@ forcedColors:matchMedia('(forced-colors: active)').matches}})"""
 
 
 FONT_TEMPLATE = "linux-firefox-fonts-glx-v1"
+WORKER_TEMPLATE = "linux-firefox-workers-glx-v1"
+FONT_TEMPLATES = {FONT_TEMPLATE, WORKER_TEMPLATE}
 
 
 def create_pair(manager, template):
     """Keep ordinary seeds; font acceptance requires two qualified font sets."""
-    if template != FONT_TEMPLATE:
+    if template not in FONT_TEMPLATES:
         return manager.create(seed=1, template_id=template), manager.create(seed=2, template_id=template)
     snapshot = manager.current_snapshot()
     catalog = manager.catalog()
@@ -123,10 +125,32 @@ def stable_font_evidence(fonts):
     }
 
 
+def stable_worker_graphics(worker):
+    """Compare actual Worker fonts and GL readback, not process diagnostics."""
+    graphics = {}
+    for api in ("webgl1", "webgl2"):
+        value = worker["webgl"][api]
+        behavior = value["behavior"]
+        assert value["supported"] is True and behavior["passed"] is True
+        graphics[api] = {
+            key: value[key]
+            for key in ("supported", "vendor", "renderer", "unmaskedVendor", "unmaskedRenderer")
+        }
+        graphics[api]["behavior"] = {
+            "compile": behavior["compile"], "link": behavior["link"], "passed": behavior["passed"],
+            "triangle": {key: behavior["triangle"][key] for key in (
+                "compile", "link", "redPixels", "nonEmpty", "exactRed", "rgba", "readback")},
+            "framebuffer": {key: behavior["framebuffer"][key] for key in (
+                "rgba8", "complete", "readback", "exactGreen", "rgba")},
+        }
+    return {"fonts": stable_font_evidence(worker["fonts"]), **graphics}
+
+
 async def main(template=None):
     manager = PersonaManager()
     a, b = create_pair(manager, template)
-    font_mode = template == FONT_TEMPLATE
+    font_mode = template in FONT_TEMPLATES
+    worker_mode = template == WORKER_TEMPLATE
     font_expression = font_window_expression((a, b)) if font_mode else None
     async def serve(reader, writer):
         try:
@@ -152,7 +176,18 @@ async def main(template=None):
         report = read_json(manager.paths(persona.persona_id)["directory"] / "last-probe.json")
         fonts = report["observations"]["page"]["fonts"]
         results["fonts"][label] = fonts
-        return stable_font_evidence(fonts)
+        window_evidence = stable_font_evidence(fonts)
+        if not worker_mode:
+            return window_evidence
+        workers = report["observations"]["page"]["workers"]
+        # Full qualification has already checked every required context. Keep
+        # the observed pixel/metric and identity values for restart comparison.
+        worker_evidence = {
+            context: stable_worker_graphics(workers[context])
+            for context in persona.final_config["worker_graphics"]["contexts"]
+        }
+        results.setdefault("workers", {})[label] = worker_evidence
+        return {"window_fonts": window_evidence, "workers": worker_evidence}
 
     def passed(name):
         results["checks"].append(name)
@@ -178,6 +213,8 @@ async def main(template=None):
             results["fonts"]["a_window_before"] = font_a
             font_a_probe = await capture_font_probe(a, "a_probe_before")
             passed("A font positive/negative, Canvas exports and TextMetrics")
+            if worker_mode:
+                passed("A Dedicated/Shared/Service Worker fonts and WebGL")
             # Firefox retains content processes after the full multi-realm
             # probe. Restart this same profile before the dual-instance test
             # so its probe-only processes do not consume the second slot.
@@ -249,6 +286,8 @@ async def main(template=None):
             assert await evaluate(ids[1], font_expression) == font_b
             await capture_font_probe(b, "b_probe_after_a_stop")
             passed("B font probe remains valid after A stops")
+            if worker_mode:
+                passed("B Worker fonts and WebGL remain valid after A stops")
         await manager.stop(ids[1])
         passed("stopping A leaves B intact")
         await manager.start(ids[0])
@@ -264,6 +303,8 @@ async def main(template=None):
             results["fonts"]["a_window_restarted"] = restored_fonts
             assert await capture_font_probe(a, "a_probe_restarted") == font_a_probe
             passed("restart preserves font visibility, Canvas pixels/exports and TextMetrics")
+            if worker_mode:
+                passed("restart preserves three Worker font and WebGL evidence")
         if "geolocation" in a.final_config:
             if not font_mode:
                 assert (await manager.qualify(ids[0])).passed

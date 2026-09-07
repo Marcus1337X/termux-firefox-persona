@@ -28,11 +28,11 @@ _REALMS = ("window", "dedicated", "shared", "service")
 _CSS_GENERIC_ALIASES = frozenset({"sans-serif", "serif", "monospace"})
 
 
-def _font_rendering_valid(value: Any) -> bool:
+def _font_rendering_valid(value: Any, *, worker: bool = False) -> bool:
     rendered = _mapping(value)
     digest = rendered.get("hash")
     metrics = _mapping(rendered.get("metrics"))
-    return (
+    common = (
         all(rendered.get(key) is True for key in ("supported", "nonEmpty", "stable", "exportMatches"))
         and isinstance(digest, str) and len(digest) == 8
         and all(char in "0123456789abcdef" for char in digest)
@@ -41,16 +41,193 @@ def _font_rendering_valid(value: Any) -> bool:
         and all(type(metrics.get(key)) in (int, float) and math.isfinite(metrics[key])
                 for key in ("width", "ascent", "descent", "left", "right"))
         and metrics["width"] > 0
-        and all(_mapping(rendered.get(key)).get("supported") is True
-                and _mapping(rendered.get(key)).get("hash") == digest
-                for key in ("dataUrlDecoded", "blobDecoded"))
+    )
+    data_url = _mapping(rendered.get("dataUrlDecoded"))
+    blob = _mapping(rendered.get("blobDecoded"))
+    if worker:
+        return common and rendered.get("exportApi") == "convertToBlob" \
+            and rendered.get("dataUrlLength") is None \
+            and data_url.get("supported") is False \
+            and data_url.get("notApplicable") is True \
+            and blob.get("supported") is True \
+            and blob.get("hash") == digest
+    return common and data_url.get("supported") is True \
+        and data_url.get("hash") == digest \
+        and blob.get("supported") is True \
+        and blob.get("hash") == digest
+
+
+def _font_renderings_match(first: Any, second: Any, *, worker: bool = False) -> bool:
+    first, second = _mapping(first), _mapping(second)
+    return (_font_rendering_valid(first, worker=worker) and _font_rendering_valid(second, worker=worker)
+            and first["metrics"] == second["metrics"] and first["hash"] == second["hash"])
+
+
+def _font_observation_valid(
+    observed: Mapping[str, Any],
+    expected_config: Mapping[str, Any],
+    *,
+    worker: bool,
+) -> tuple[bool, dict[str, Any]]:
+    """Validate one window/worker font observation and return evidence data."""
+    expected_families = expected_config.get("families", ())
+    aliases = _mapping(expected_config.get("aliases"))
+    expected_aliases = {
+        str(alias): target for alias, target in aliases.items()
+        if str(alias).lower() in _CSS_GENERIC_ALIASES
+    }
+    expected_samples = _mapping(expected_config.get("samples"))
+    expected_blocked = expected_config.get("blocked_families", ())
+    positive = _mapping(observed.get("positive"))
+    observed_families = _mapping(observed.get("families"))
+    observed_aliases = _mapping(observed.get("aliases"))
+    aliases_checked = observed.get("aliases_checked")
+    negative = _mapping(observed.get("negative"))
+    valid = (
+        expected_config.get("policy") == "whitelist"
+        and isinstance(expected_families, Sequence)
+        and not isinstance(expected_families, (str, bytes))
+        and bool(expected_families)
+        and observed.get("workerFonts") == ("measured" if worker else "not_verified")
+    )
+    values: dict[str, Any] = {
+        "families": {}, "aliases": {}, "blocked_families": {},
+        "aliases_checked": aliases_checked,
+        "missing_family": observed.get("missingFamily"),
+        "worker_fonts": observed.get("workerFonts", "unknown"),
+        "policy": observed.get("policy"),
+    }
+    for family_value in expected_families if isinstance(expected_families, Sequence) else ():
+        family = str(family_value)
+        item = _mapping(observed_families.get(family))
+        positive_item = _mapping(positive.get(family, item.get("positive")))
+        sample = str(expected_samples.get(family, ""))
+        values["families"][family] = item
+        valid = valid and bool(item) and positive_item.get("ok") is True
+        valid = valid and family in expected_samples and item.get("sample") == sample
+        valid = valid and item.get("metricsMatch") is True and item.get("pixelMatch") is True
+        valid = valid and _font_renderings_match(item.get("direct"), item.get("local"), worker=worker)
+    if isinstance(expected_blocked, Sequence) and not isinstance(expected_blocked, (str, bytes)):
+        for family_value in expected_blocked:
+            family = str(family_value)
+            item = _mapping(negative.get(family))
+            values["blocked_families"][family] = item
+            valid = valid and item.get("failed") is True
+    missing_family = observed.get("missingFamily")
+    missing_item = _mapping(negative.get(str(missing_family))) if missing_family else {}
+    values["missing"] = missing_item
+    valid = valid and bool(missing_item) and missing_item.get("failed") is True
+    valid = valid and (
+        isinstance(aliases_checked, Sequence)
+        and not isinstance(aliases_checked, (str, bytes))
+        and sorted(str(alias) for alias in aliases_checked) == sorted(expected_aliases)
+    )
+    for alias_value, target_value in expected_aliases.items():
+        alias, target = str(alias_value), str(target_value)
+        item = _mapping(observed_aliases.get(alias))
+        values["aliases"][alias] = item
+        valid = valid and bool(item) and item.get("target") == target
+        valid = valid and item.get("metricsMatch") is True and item.get("pixelMatch") is True
+        valid = valid and _font_renderings_match(
+            item.get("generic"), item.get("targetLocal"), worker=worker
+        )
+    return valid, values
+
+
+def _webgl_context_identity(context: Mapping[str, Any]) -> tuple[Any, Any]:
+    return (
+        context.get("unmaskedVendor") or context.get("vendor"),
+        context.get("unmaskedRenderer") or context.get("renderer"),
     )
 
 
-def _font_renderings_match(first: Any, second: Any) -> bool:
-    first, second = _mapping(first), _mapping(second)
-    return (_font_rendering_valid(first) and _font_rendering_valid(second)
-            and first["metrics"] == second["metrics"] and first["hash"] == second["hash"])
+def _webgl_rgba(value: Any, expected: list[int]) -> bool:
+    return (
+        isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes))
+        and list(value) == expected
+    )
+
+
+def _webgl_behavior_valid(value: Mapping[str, Any]) -> bool:
+    triangle = _mapping(value.get("triangle"))
+    framebuffer = _mapping(value.get("framebuffer"))
+    errors = value.get("errors")
+    return (
+        value.get("compile") is True
+        and value.get("link") is True
+        and value.get("passed") is True
+        and isinstance(errors, Sequence)
+        and not isinstance(errors, (str, bytes))
+        and len(errors) == 0
+        and triangle.get("compile") is True
+        and triangle.get("link") is True
+        and triangle.get("nonEmpty") is True
+        and triangle.get("readback") is True
+        and triangle.get("exactRed") is True
+        and _webgl_rgba(triangle.get("rgba"), [255, 0, 0, 255])
+        and framebuffer.get("rgba8") is True
+        and framebuffer.get("complete") is True
+        and framebuffer.get("readback") is True
+        and framebuffer.get("exactGreen") is True
+        and _webgl_rgba(framebuffer.get("rgba"), [0, 255, 0, 255])
+    )
+
+
+def _webgl_observation_valid(
+    observed: Mapping[str, Any],
+    graphics: Mapping[str, Any],
+    *,
+    reference_identity: tuple[Any, Any] | None = None,
+) -> tuple[bool, dict[str, Any], tuple[Any, Any] | None]:
+    """Validate one realm's WebGL1/WebGL2 identity and pixel behavior."""
+    webgl1 = _mapping(observed.get("webgl1"))
+    webgl2 = _mapping(observed.get("webgl2"))
+    behavior = _mapping(observed.get("behavior"))
+    behavior1 = _mapping(behavior.get("webgl1", webgl1.get("behavior")))
+    behavior2 = _mapping(behavior.get("webgl2", webgl2.get("behavior")))
+    identity = _webgl_context_identity(observed)
+    identity1 = _webgl_context_identity(webgl1)
+    identity2 = _webgl_context_identity(webgl2)
+    observed_vendor, observed_renderer = identity
+
+    def graphics_match(expected: Any, actual: Any) -> bool:
+        if not isinstance(expected, str) or not isinstance(actual, str):
+            return False
+        lhs, rhs = expected.strip().lower(), actual.strip().lower()
+        if lhs == "llvmpipe, or similar":
+            return "llvmpipe" in rhs
+        if lhs == "mesa":
+            return rhs == "mesa" or rhs.startswith("mesa ")
+        return lhs == rhs
+
+    ok = (
+        observed.get("supported") is True
+        and graphics_match(graphics.get("vendor"), observed_vendor)
+        and graphics_match(graphics.get("renderer"), observed_renderer)
+        and identity is not None
+        and identity1 == identity
+        and identity2 == identity
+        and (reference_identity is None or identity == reference_identity)
+        and bool(graphics.get("webgl1"))
+        and bool(graphics.get("webgl2"))
+        and webgl1.get("supported") is True
+        and webgl2.get("supported") is True
+        and _webgl_behavior_valid(behavior1)
+        and _webgl_behavior_valid(behavior2)
+    )
+    values = {
+        "supported": observed.get("supported"),
+        "vendor": observed_vendor,
+        "renderer": observed_renderer,
+        "webgl1": {"supported": webgl1.get("supported"),
+                    "vendor": identity1[0], "renderer": identity1[1],
+                    "behavior": behavior1},
+        "webgl2": {"supported": webgl2.get("supported"),
+                    "vendor": identity2[0], "renderer": identity2[1],
+                    "behavior": behavior2},
+    }
+    return ok, values, identity if all(item is not None for item in identity) else None
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -530,95 +707,15 @@ def qualify_probe(
     if "fonts_window" in template.required_capabilities:
         fonts_config = _mapping(final_config.get("fonts"))
         fonts_observed = _mapping(page.get("fonts"))
-        expected_families = fonts_config.get("families", ())
-        all_aliases = _mapping(fonts_config.get("aliases"))
-        # emoji and cjk are persona fallback roles, not CSS generic family
-        # names.  They are covered by their family samples; only these three
-        # CSS generics are meaningful alias equivalence checks here.
-        expected_aliases = {
-            str(alias): target for alias, target in all_aliases.items()
-            if str(alias).lower() in _CSS_GENERIC_ALIASES
-        }
-        expected_samples = _mapping(fonts_config.get("samples"))
-        expected_blocked = fonts_config.get("blocked_families", ())
-        positive = _mapping(fonts_observed.get("positive"))
-        observed_families = _mapping(fonts_observed.get("families"))
-        observed_aliases = _mapping(fonts_observed.get("aliases"))
-        observed_aliases_checked = fonts_observed.get("aliases_checked")
-        negative = _mapping(fonts_observed.get("negative"))
-        fonts_ok = (
-            fonts_config.get("policy") == "whitelist"
-            and isinstance(expected_families, Sequence)
-            and not isinstance(expected_families, (str, bytes))
-            and bool(expected_families)
-            and fonts_observed.get("workerFonts") == "not_verified"
+        fonts_ok, observed_font_values = _font_observation_valid(
+            fonts_observed, fonts_config, worker=False
         )
-        observed_font_values: dict[str, Any] = {
-            "families": {}, "aliases": {}, "blocked_families": {},
-            "aliases_checked": observed_aliases_checked,
-            "missing_family": fonts_observed.get("missingFamily"),
-            "worker_fonts": fonts_observed.get("workerFonts", "not_verified"),
-            "policy": fonts_observed.get("policy"),
-        }
-        for family_value in expected_families if isinstance(expected_families, Sequence) else ():
-            family = str(family_value)
-            item = _mapping(observed_families.get(family))
-            positive_item = _mapping(positive.get(family, item.get("positive")))
-            sample_present = family in expected_samples
-            sample = str(expected_samples.get(family, ""))
-            observed_font_values["families"][family] = item
-            fonts_ok = fonts_ok and bool(item)
-            fonts_ok = fonts_ok and positive_item.get("ok") is True
-            fonts_ok = fonts_ok and sample_present
-            fonts_ok = fonts_ok and item.get("sample") == sample
-            fonts_ok = fonts_ok and item.get("metricsMatch") is True and item.get("pixelMatch") is True
-            fonts_ok = fonts_ok and _font_renderings_match(item.get("direct"), item.get("local"))
-            for mode in ("direct", "local"):
-                rendered = _mapping(item.get(mode))
-                fonts_ok = fonts_ok and rendered.get("supported") is True
-                fonts_ok = fonts_ok and rendered.get("nonEmpty") is True
-                fonts_ok = fonts_ok and rendered.get("stable") is True
-                fonts_ok = fonts_ok and rendered.get("exportMatches") is True
-        if isinstance(expected_blocked, Sequence) and not isinstance(expected_blocked, (str, bytes)):
-            for family_value in expected_blocked:
-                family = str(family_value)
-                item = _mapping(negative.get(family))
-                observed_font_values["blocked_families"][family] = item
-                fonts_ok = fonts_ok and item.get("failed") is True
-        missing_family = fonts_observed.get("missingFamily")
-        missing_item = _mapping(negative.get(str(missing_family))) if missing_family else {}
-        fonts_ok = fonts_ok and bool(missing_item) and missing_item.get("failed") is True
-        observed_font_values["missing"] = missing_item
-        if not isinstance(expected_aliases, Mapping):
-            fonts_ok = False
-        fonts_ok = fonts_ok and (
-            isinstance(observed_aliases_checked, Sequence)
-            and not isinstance(observed_aliases_checked, (str, bytes))
-            and sorted(str(alias) for alias in observed_aliases_checked)
-            == sorted(expected_aliases)
-        )
-        for alias_value, target_value in expected_aliases.items():
-            alias, target = str(alias_value), str(target_value)
-            item = _mapping(observed_aliases.get(alias))
-            observed_font_values["aliases"][alias] = item
-            fonts_ok = fonts_ok and bool(item)
-            fonts_ok = fonts_ok and item.get("target") == target
-            fonts_ok = fonts_ok and item.get("metricsMatch") is True and item.get("pixelMatch") is True
-            fonts_ok = fonts_ok and _font_renderings_match(item.get("generic"), item.get("targetLocal"))
-            for mode in ("generic", "targetLocal"):
-                rendered = _mapping(item.get(mode))
-                fonts_ok = fonts_ok and rendered.get("supported") is True
-                fonts_ok = fonts_ok and rendered.get("nonEmpty") is True
-                fonts_ok = fonts_ok and rendered.get("stable") is True
-                fonts_ok = fonts_ok and rendered.get("exportMatches") is True
         evidence.append(_evidence(
             "fonts_window", _status(fonts_ok), snapshot_obj,
             {"families": fonts_config.get("families"), "aliases": fonts_config.get("aliases"),
-             "aliases_checked": sorted(expected_aliases),
              "samples": fonts_config.get("samples"), "blocked_families": fonts_config.get("blocked_families"),
              "policy": fonts_config.get("policy")},
-            observed_font_values,
-            ("window",),
+            observed_font_values, ("window",),
             (
                 "observations.page.fonts.positive",
                 "observations.page.fonts.families.metrics/pixels/exports",
@@ -631,101 +728,142 @@ def qualify_probe(
         if not fonts_ok:
             diagnostic_reasons.append("font whitelist, aliases, negative loads or canvas evidence do not match")
 
+    if "fonts_workers" in template.required_capabilities:
+        fonts_config = _mapping(final_config.get("fonts"))
+        window_fonts = _mapping(page.get("fonts"))
+        window_families = _mapping(window_fonts.get("families"))
+        window_aliases = _mapping(window_fonts.get("aliases"))
+        worker_values: dict[str, Any] = {}
+        workers_fonts_ok = True
+
+        def same_rendering(window_value: Any, worker_value: Any) -> bool:
+            window_rendering = _mapping(window_value)
+            worker_rendering = _mapping(worker_value)
+            return (
+                _font_rendering_valid(window_rendering, worker=False)
+                and _font_rendering_valid(worker_rendering, worker=True)
+                and window_rendering.get("metrics") == worker_rendering.get("metrics")
+                and window_rendering.get("hash") == worker_rendering.get("hash")
+            )
+
+        for realm in _REALMS[1:]:
+            realm_data = _realm(workers, realm)
+            observed = _mapping(realm_data.get("fonts"))
+            realm_ok, values = _font_observation_valid(
+                observed, fonts_config, worker=True
+            )
+            for family_value in fonts_config.get("families", ()):
+                family = str(family_value)
+                worker_item = _mapping(_mapping(observed.get("families")).get(family))
+                window_item = _mapping(window_families.get(family))
+                realm_ok = realm_ok and same_rendering(
+                    window_item.get("direct"), worker_item.get("direct")
+                ) and same_rendering(
+                    window_item.get("local"), worker_item.get("local")
+                )
+            for alias in ("sans-serif", "serif", "monospace"):
+                worker_item = _mapping(_mapping(observed.get("aliases")).get(alias))
+                window_item = _mapping(window_aliases.get(alias))
+                if worker_item or window_item:
+                    realm_ok = realm_ok and same_rendering(
+                        window_item.get("generic"), worker_item.get("generic")
+                    ) and same_rendering(
+                        window_item.get("targetLocal"), worker_item.get("targetLocal")
+                    )
+            values = dict(values)
+            values["window_consistency"] = realm_ok
+            worker_values[realm] = values
+            workers_fonts_ok = workers_fonts_ok and realm_ok
+        observed_workers_fonts = {"workers": worker_values, "window_consistency": workers_fonts_ok}
+        evidence.append(_evidence(
+            "fonts_workers", _status(workers_fonts_ok), snapshot_obj,
+            {"families": fonts_config.get("families"), "aliases": fonts_config.get("aliases"),
+             "samples": fonts_config.get("samples"), "blocked_families": fonts_config.get("blocked_families"),
+             "policy": fonts_config.get("policy"), "contexts": list(_REALMS[1:])},
+            observed_workers_fonts, _REALMS,
+            (
+                "observations.page.workers.{dedicated,shared,service}.fonts.positive",
+                "observations.page.workers.*.fonts.families.direct/local.metrics/hash/repeatHash",
+                "observations.page.workers.*.fonts.aliases.generic/targetLocal",
+                "observations.page.workers.*.fonts.negative",
+                "observations.page.workers.*.fonts.workerFonts=measured",
+                "observations.page.workers.*.fonts.window_consistency",
+            ),
+        ))
+        if not workers_fonts_ok:
+            diagnostic_reasons.append("worker fonts are missing, invalid, or differ from the window")
+
+    window_webgl_identity: tuple[Any, Any] | None = None
     if "webgl_window" in template.required_capabilities:
         graphics = _mapping(final_config.get("graphics"))
         webgl = _mapping(page.get("webgl"))
-        webgl1 = _mapping(webgl.get("webgl1"))
-        webgl2 = _mapping(webgl.get("webgl2"))
-        behavior = _mapping(webgl.get("behavior"))
-        behavior1 = _mapping(behavior.get("webgl1", webgl1.get("behavior")))
-        behavior2 = _mapping(behavior.get("webgl2", webgl2.get("behavior")))
-        observed_vendor = webgl.get("unmaskedVendor") or webgl.get("vendor")
-        observed_renderer = webgl.get("unmaskedRenderer") or webgl.get("renderer")
-
-        def graphics_match(expected: Any, observed: Any) -> bool:
-            if not isinstance(expected, str) or not isinstance(observed, str):
-                return False
-            lhs, rhs = expected.strip().lower(), observed.strip().lower()
-            if lhs == "llvmpipe, or similar":
-                return "llvmpipe" in rhs
-            if lhs == "mesa":
-                return rhs == "mesa" or rhs.startswith("mesa ")
-            return lhs == rhs
-
-        def context_identity(context: Mapping[str, Any]) -> tuple[Any, Any]:
-            return (
-                context.get("unmaskedVendor") or context.get("vendor"),
-                context.get("unmaskedRenderer") or context.get("renderer"),
-            )
-
-        def rgba(value: Any, expected: list[int]) -> bool:
-            return isinstance(value, Sequence) and not isinstance(value, (str, bytes)) \
-                and list(value) == expected
-
-        def behavior_complete(value: Mapping[str, Any]) -> bool:
-            triangle = _mapping(value.get("triangle"))
-            framebuffer = _mapping(value.get("framebuffer"))
-            errors = value.get("errors")
-            return (
-                value.get("compile") is True
-                and value.get("link") is True
-                and value.get("passed") is True
-                and isinstance(errors, Sequence) and not isinstance(errors, (str, bytes))
-                and len(errors) == 0
-                and triangle.get("compile") is True
-                and triangle.get("link") is True
-                and triangle.get("nonEmpty") is True
-                and triangle.get("readback") is True
-                and triangle.get("exactRed") is True
-                and rgba(triangle.get("rgba"), [255, 0, 0, 255])
-                and framebuffer.get("rgba8") is True
-                and framebuffer.get("complete") is True
-                and framebuffer.get("readback") is True
-                and framebuffer.get("exactGreen") is True
-                and rgba(framebuffer.get("rgba"), [0, 255, 0, 255])
-            )
-
-        webgl1_vendor, webgl1_renderer = context_identity(webgl1)
-        webgl2_vendor, webgl2_renderer = context_identity(webgl2)
-
-        graphics_ok = (
-            graphics_match(graphics.get("vendor"), observed_vendor)
-            and graphics_match(graphics.get("renderer"), observed_renderer)
-            and graphics_match(graphics.get("vendor"), webgl1_vendor)
-            and graphics_match(graphics.get("renderer"), webgl1_renderer)
-            and graphics_match(graphics.get("vendor"), webgl2_vendor)
-            and graphics_match(graphics.get("renderer"), webgl2_renderer)
-            and bool(graphics.get("webgl1"))
-            and bool(graphics.get("webgl2"))
-            and webgl1.get("supported") is True
-            and webgl2.get("supported") is True
-            and behavior_complete(behavior1)
-            and behavior_complete(behavior2)
+        graphics_ok, observed_graphics, window_webgl_identity = _webgl_observation_valid(
+            webgl, graphics
         )
         observed_graphics = {
-            "vendor": observed_vendor,
-            "renderer": observed_renderer,
-            "webgl1": {"supported": webgl1.get("supported"), "vendor": webgl1_vendor,
-                       "renderer": webgl1_renderer, "behavior": behavior1},
-            "webgl2": {"supported": webgl2.get("supported"), "vendor": webgl2_vendor,
-                       "renderer": webgl2_renderer, "behavior": behavior2},
-            "worker_webgl": "not_verified",
+            **observed_graphics,
+            "worker_webgl": (
+                "separate_evidence"
+                if "webgl_workers" in template.required_capabilities
+                else "not_verified"
+            ),
             "raw": webgl,
         }
         evidence.append(_evidence(
             "webgl_window", _status(graphics_ok), snapshot_obj,
-            graphics, observed_graphics,
-            ("window",),
+            graphics, observed_graphics, ("window",),
             (
                 "observations.page.webgl.unmaskedVendor",
                 "observations.page.webgl.unmaskedRenderer",
                 "observations.page.webgl.webgl1.behavior",
                 "observations.page.webgl.webgl2.behavior",
-                "observations.page.webgl.worker_webgl=not_verified",
+                "observations.page.webgl.raw",
+                "observations.page.webgl.worker_webgl",
             ),
         ))
         if not graphics_ok:
             diagnostic_reasons.append("WebGL1/WebGL2 context, shader, draw or framebuffer behavior does not match")
+
+    if "webgl_workers" in template.required_capabilities:
+        graphics = _mapping(final_config.get("graphics"))
+        window_webgl = _mapping(page.get("webgl"))
+        if window_webgl_identity is None:
+            _, _, window_webgl_identity = _webgl_observation_valid(
+                window_webgl, graphics
+            )
+        worker_webgl_values: dict[str, Any] = {}
+        workers_webgl_ok = True
+        for realm in _REALMS[1:]:
+            observed = _mapping(_realm(workers, realm).get("webgl"))
+            realm_ok, values, identity = _webgl_observation_valid(
+                observed, graphics, reference_identity=window_webgl_identity
+            )
+            values = dict(values)
+            values["identity_matches_window"] = (
+                identity is not None and identity == window_webgl_identity
+            )
+            worker_webgl_values[realm] = values
+            workers_webgl_ok = workers_webgl_ok and realm_ok
+        observed_workers_webgl = {
+            "window_identity": window_webgl_identity,
+            "workers": worker_webgl_values,
+        }
+        evidence.append(_evidence(
+            "webgl_workers", _status(workers_webgl_ok), snapshot_obj,
+            {"vendor": graphics.get("vendor"), "renderer": graphics.get("renderer"),
+             "webgl1": graphics.get("webgl1"), "webgl2": graphics.get("webgl2"),
+             "contexts": list(_REALMS[1:])},
+            observed_workers_webgl, _REALMS,
+            (
+                "observations.page.workers.{dedicated,shared,service}.webgl.unmaskedVendor",
+                "observations.page.workers.*.webgl.unmaskedRenderer",
+                "observations.page.workers.*.webgl.webgl1.behavior",
+                "observations.page.workers.*.webgl.webgl2.behavior",
+                "observations.page.workers.*.webgl.identity_matches_window",
+            ),
+        ))
+        if not workers_webgl_ok:
+            diagnostic_reasons.append("worker WebGL contexts, identities or shader/framebuffer behavior do not match")
 
     if "graphics_full_combination" in template.required_capabilities:
         graphics = _mapping(final_config.get("graphics"))

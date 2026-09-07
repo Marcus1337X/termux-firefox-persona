@@ -142,7 +142,7 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
         fail("accept_language sequence must match languages")
 
     fonts = config.get("fonts")
-    if template_id == "linux-firefox-fonts-glx-v1" and fonts is None:
+    if template_id in {"linux-firefox-fonts-glx-v1", "linux-firefox-workers-glx-v1"} and fonts is None:
         fail("font preset requires fonts")
     if fonts is not None:
         if not isinstance(fonts, Mapping) or fonts.get("policy") != "whitelist":
@@ -196,7 +196,7 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
             fail("geolocation.permission is invalid")
     # Region relationships belong to this finite preset family, not to every
     # multilingual desktop. Other families can define different relationships.
-    if template_id in {"linux-firefox-region-appearance-v1", "linux-firefox-software-glx-v1", "linux-firefox-fonts-glx-v1"}:
+    if template_id in {"linux-firefox-region-appearance-v1", "linux-firefox-software-glx-v1", "linux-firefox-fonts-glx-v1", "linux-firefox-workers-glx-v1"}:
         regions = {"zh-CN": ("Asia/Shanghai", 31.2304, 121.4737),
                    "en-US": ("America/New_York", 40.7128, -74.0060)}
         expected = regions.get(locale["locale"])
@@ -205,7 +205,7 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
             fail("geolocation and timezone must match this preset's locale region")
         if "contrast" not in appearance:
             fail("regional appearance requires an explicit contrast preference")
-    if template_id in {"linux-firefox-software-glx-v1", "linux-firefox-fonts-glx-v1"}:
+    if template_id in {"linux-firefox-software-glx-v1", "linux-firefox-fonts-glx-v1", "linux-firefox-workers-glx-v1"}:
         graphics = config.get("graphics")
         expected_graphics = {
             "identity_class": "native-linux-firefox", "hardware_class": "software",
@@ -216,6 +216,16 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
                 or any(graphics.get(name) != value or type(graphics.get(name)) is not type(value)
                        for name, value in expected_graphics.items())):
             fail("software GLX graphics must match the measured Mesa software identity")
+    worker_graphics = config.get("worker_graphics")
+    if template_id == "linux-firefox-workers-glx-v1" and worker_graphics is None:
+        fail("Worker graphics preset requires worker_graphics")
+    if worker_graphics is not None:
+        if (not isinstance(worker_graphics, Mapping)
+                or set(worker_graphics) != {"contexts", "fonts", "webgl"}
+                or worker_graphics.get("contexts") != ["dedicated", "shared", "service"]
+                or worker_graphics.get("fonts") is not True
+                or worker_graphics.get("webgl") is not True):
+            fail("worker_graphics must require fonts and WebGL in dedicated, shared and service contexts")
 
 
 def _matches_template(template: "PersonaTemplate", config: Mapping[str, Any],
