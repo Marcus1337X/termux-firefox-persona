@@ -7,13 +7,15 @@ import asyncio
 import argparse
 import json
 
-from src.persona.control import atomic_json, process_usage
+from src.persona.control import atomic_json, check_process_budget, process_usage, read_json
 from src.persona.manager import PersonaManager
+from src.persona.model import PersonaGenerator, TemplateCatalog
 
 
-HTML = b'''<!doctype html><meta charset="utf-8"><title>Persona acceptance</title>
+HTML = '''<!doctype html><meta charset="utf-8"><title>Persona acceptance</title>
 <input id="entry"><button id="button" onclick="this.dataset.clicked='yes'">Click</button>
-<button id="popup" onclick="window.open(location.href,'persona-popup')">Popup</button>'''
+<button id="popup" onclick="window.open(location.href,'persona-popup')">Popup</button>
+<p style="font:32px serif">Hamburgefontsiv AVMW 0123456789 汉字中文测试天地玄黄 😀🌍🚀</p>'''.encode("utf-8")
 IDENTITY = """({languages:navigator.languages,cpu:navigator.hardwareConcurrency,
 tz:Intl.DateTimeFormat().resolvedOptions().timeZone,screen:[screen.width,screen.height],
 appearance:{dark:matchMedia('(prefers-color-scheme: dark)').matches,
@@ -22,8 +24,110 @@ ordinaryContrast:matchMedia('(prefers-contrast: no-preference)').matches,
 forcedColors:matchMedia('(forced-colors: active)').matches}})"""
 
 
+FONT_TEMPLATE = "linux-firefox-fonts-glx-v1"
+
+
+def create_pair(manager, template):
+    """Keep ordinary seeds; font acceptance requires two qualified font sets."""
+    if template != FONT_TEMPLATE:
+        return manager.create(seed=1, template_id=template), manager.create(seed=2, template_id=template)
+    snapshot = manager.current_snapshot()
+    catalog = manager.catalog()
+    selected = TemplateCatalog([catalog.get(template)])
+    for report in catalog.reports():
+        if report.template_id == template:
+            selected.promote(report)
+    generator = PersonaGenerator(selected, snapshot,
+                                 runtime_browser_version=snapshot.environment["firefox_version"])
+    chosen = []
+    seen = set()
+    # Search metadata only: do not create surplus saved Personas or processes.
+    for seed in range(1, 65):
+        candidate = generator.create(seed=seed)
+        signature = tuple(sorted(candidate.final_config["fonts"]["families"]))
+        if signature not in seen:
+            seen.add(signature)
+            chosen.append(seed)
+        if len(chosen) == 2:
+            break
+    if len(chosen) != 2:
+        raise AssertionError("Font acceptance requires two qualified, different font whitelists")
+    return tuple(manager.create(seed=seed, template_id=template) for seed in chosen)
+
+
+def font_window_expression(personas):
+    """A lightweight same-sample Window check while two instances are running.
+
+    Full probe creates Worker realms and is only run with one live Persona.
+    This check needs no new tabs, worker processes or temporary font CSS.
+    """
+    names = {"__TBP_ACCEPTANCE_MISSING_FONT__"}
+    local_names = {}
+    for persona in personas:
+        fonts = persona.final_config["fonts"]
+        names.update(fonts["families"])
+        names.update(fonts["blocked_families"])
+        local_names.update(fonts.get("local_names", {}))
+    return """(async () => {
+      const names = __FAMILY_NAMES__;
+      const localNames = __LOCAL_NAMES__;
+      const local = {};
+      for (let i = 0; i < names.length; i++) {
+        try {
+          const face = new FontFace('__tbpAcceptance' + i, 'local(' + JSON.stringify(localNames[names[i]] || names[i]) + ')');
+          await face.load(); local[names[i]] = face.status === 'loaded';
+        } catch (_) { local[names[i]] = false; }
+      }
+      await document.fonts.ready;
+      const sample = 'Hamburgefontsiv AVMW 0123456789 汉字中文测试天地玄黄';
+      const canvas = document.createElement('canvas'); canvas.width = 1024; canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#102030'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#f0d050'; ctx.font = '32px serif';
+      const m = ctx.measureText(sample); ctx.fillText(sample, 8, 72);
+      const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let hash = 2166136261, inkPixels = 0;
+      for (let i = 0; i < pixels.length; i++) { hash ^= pixels[i]; hash = Math.imul(hash, 16777619); }
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (pixels[i] !== 16 || pixels[i+1] !== 32 || pixels[i+2] !== 48 || pixels[i+3] !== 255) inkPixels++;
+      }
+      return {local, serif: {sample, hash: (hash >>> 0).toString(16).padStart(8, '0'), inkPixels,
+        metrics: {width:m.width, ascent:m.actualBoundingBoxAscent, descent:m.actualBoundingBoxDescent,
+                  left:m.actualBoundingBoxLeft, right:m.actualBoundingBoxRight}}};
+    })()""".replace("__FAMILY_NAMES__", json.dumps(sorted(names), ensure_ascii=False)).replace(
+        "__LOCAL_NAMES__", json.dumps(local_names, ensure_ascii=False))
+
+
+def check_font_window(persona, observed):
+    allowed = set(persona.final_config["fonts"]["families"])
+    assert observed["local"] == {name: name in allowed for name in observed["local"]}, \
+        "Window local font visibility does not match its Persona whitelist"
+    assert allowed.issubset(observed["local"])
+    assert observed["serif"]["inkPixels"] > 0, "Font comparison canvas contains no text"
+    assert observed["serif"]["metrics"]["width"] > 0
+
+
+def stable_font_evidence(fonts):
+    """Keep actual pixels and TextMetrics, excluding diagnostic error wording."""
+    def rendering(value):
+        return {key: value[key] for key in ("hash", "metrics", "inkPixels", "repeatHash", "exportMatches")}
+    return {
+        "positive": {name: value["ok"] for name, value in fonts["positive"].items()},
+        "negative": {name: value["failed"] for name, value in fonts["negative"].items()},
+        "families": {name: {"sample": value["sample"], "direct": rendering(value["direct"]),
+                             "local": rendering(value["local"])}
+                     for name, value in fonts["families"].items()},
+        "aliases": {name: {"target": value["target"], "generic": rendering(value["generic"]),
+                            "targetLocal": rendering(value["targetLocal"])}
+                    for name, value in fonts["aliases"].items()},
+    }
+
+
 async def main(template=None):
     manager = PersonaManager()
+    a, b = create_pair(manager, template)
+    font_mode = template == FONT_TEMPLATE
+    font_expression = font_window_expression((a, b)) if font_mode else None
     async def serve(reader, writer):
         try:
             await reader.readuntil(b"\r\n\r\n")
@@ -34,13 +138,22 @@ async def main(template=None):
             await writer.wait_closed()
     server = await asyncio.start_server(serve, "127.0.0.1", 0)
     url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/"
-    a, b = manager.create(seed=1, template_id=template), manager.create(seed=2, template_id=template)
     ids = [a.persona_id, b.persona_id]
     results = {"personas": ids, "checks": [], "baseline": process_usage()}
+    if font_mode:
+        results["fonts"] = {"seeds": [a.seed, b.seed],
+                            "requested": {persona.persona_id: persona.final_config["fonts"] for persona in (a, b)}}
     async def command(pid, action, **params):
         return await manager.command(pid, action, params)
     async def evaluate(pid, expression):
         return (await command(pid, "eval", expression=expression))["result"]
+    async def capture_font_probe(persona, label):
+        assert (await manager.qualify(persona.persona_id)).passed
+        report = read_json(manager.paths(persona.persona_id)["directory"] / "last-probe.json")
+        fonts = report["observations"]["page"]["fonts"]
+        results["fonts"][label] = fonts
+        return stable_font_evidence(fonts)
+
     def passed(name):
         results["checks"].append(name)
         print(name, flush=True)
@@ -59,6 +172,20 @@ async def main(template=None):
         await manager.start(ids[0])
         await command(ids[0], "goto", url=url)
         identity = await evaluate(ids[0], IDENTITY)
+        if font_mode:
+            font_a = await evaluate(ids[0], font_expression)
+            check_font_window(a, font_a)
+            results["fonts"]["a_window_before"] = font_a
+            font_a_probe = await capture_font_probe(a, "a_probe_before")
+            passed("A font positive/negative, Canvas exports and TextMetrics")
+            # Firefox retains content processes after the full multi-realm
+            # probe. Restart this same profile before the dual-instance test
+            # so its probe-only processes do not consume the second slot.
+            await manager.stop(ids[0])
+            await manager.start(ids[0])
+            await command(ids[0], "goto", url=url)
+            assert await evaluate(ids[0], IDENTITY) == identity
+            assert await evaluate(ids[0], font_expression) == font_a
         await evaluate(ids[0], "(()=>{localStorage.setItem('owner','A');document.cookie='owner=A;max-age=3600';return true})()")
         # Native X11 input and legacy screenshot routing on a controlled page.
         await command(ids[0], "type", target="#entry", text="persona-A")
@@ -72,13 +199,37 @@ async def main(template=None):
         await command(ids[0], "tab_new", url=url)
         assert await evaluate(ids[0], IDENTITY) == identity
         assert await evaluate(ids[0], "localStorage.getItem('owner')") == "A"
+        if font_mode:
+            assert await evaluate(ids[0], font_expression) == font_a
         await command(ids[0], "tab_close")
         await command(ids[0], "tab_switch", context=first)
         await command(ids[0], "reload")
         assert await evaluate(ids[0], IDENTITY) == identity
+        if font_mode:
+            assert await evaluate(ids[0], font_expression) == font_a
         passed("tab inheritance and reload")
+        # Probe Worker shutdown is asynchronous in Firefox. Wait briefly for
+        # its processes to settle before the unchanged admission check.
+        for attempt in range(30):
+            try:
+                check_process_budget(additional=10)
+                break
+            except RuntimeError:
+                if attempt == 29:
+                    raise
+                await asyncio.sleep(0.5)
         await manager.start(ids[1])
         await command(ids[1], "goto", url=url)
+        if font_mode:
+            font_b = await evaluate(ids[1], font_expression)
+            check_font_window(b, font_b)
+            assert await evaluate(ids[0], font_expression) == font_a
+            assert font_a["local"] != font_b["local"], "Font whitelists are not independently visible"
+            assert font_a["serif"]["sample"] == font_b["serif"]["sample"]
+            assert font_a["serif"]["hash"] != font_b["serif"]["hash"], "Different serif fonts rendered identical pixels"
+            assert font_a["serif"]["metrics"] != font_b["serif"]["metrics"], "Different serif fonts have identical TextMetrics"
+            results["fonts"]["b_window_dual"] = font_b
+            passed("dual font whitelists, same-sample Canvas and TextMetrics differ")
         assert manager.status(ids[0])["display"] != manager.status(ids[1])["display"]
         assert await evaluate(ids[1], "localStorage.getItem('owner')") is None
         assert await evaluate(ids[1], "document.cookie") == ""
@@ -94,6 +245,10 @@ async def main(template=None):
         await manager.stop(ids[0])
         assert manager.status(ids[1])["alive"]
         assert await evaluate(ids[1], "localStorage.getItem('owner')") == "B"
+        if font_mode:
+            assert await evaluate(ids[1], font_expression) == font_b
+            await capture_font_probe(b, "b_probe_after_a_stop")
+            passed("B font probe remains valid after A stops")
         await manager.stop(ids[1])
         passed("stopping A leaves B intact")
         await manager.start(ids[0])
@@ -103,25 +258,38 @@ async def main(template=None):
         assert await evaluate(ids[0], "localStorage.getItem('owner')") == "A"
         assert "owner=A" in await evaluate(ids[0], "document.cookie")
         passed("restart preserves Persona and persistent storage")
+        if font_mode:
+            restored_fonts = await evaluate(ids[0], font_expression)
+            assert restored_fonts == font_a
+            results["fonts"]["a_window_restarted"] = restored_fonts
+            assert await capture_font_probe(a, "a_probe_restarted") == font_a_probe
+            passed("restart preserves font visibility, Canvas pixels/exports and TextMetrics")
         if "geolocation" in a.final_config:
-            assert (await manager.qualify(ids[0])).passed
+            if not font_mode:
+                assert (await manager.qualify(ids[0])).passed
             assert await evaluate(ids[0], "navigator.permissions.query({name:'geolocation'}).then(p=>p.state)") == "prompt"
             passed("restart preserves geolocation and probe leaves site permission untouched")
         root_context = (await command(ids[0], "tab_list"))["contexts"][0]["context"]
         await new_context_after(ids[0], "click", target="#popup")
         assert await evaluate(ids[0], IDENTITY) == identity
+        if font_mode:
+            assert await evaluate(ids[0], font_expression) == font_a
         assert await evaluate(ids[0], "localStorage.getItem('owner')") == "A"
         await command(ids[0], "tab_close")
         await command(ids[0], "tab_switch", context=root_context)
         await new_context_after(ids[0], "press", key="ctrl+n")
         await command(ids[0], "goto", url=url)
         assert await evaluate(ids[0], IDENTITY) == identity
+        if font_mode:
+            assert await evaluate(ids[0], font_expression) == font_a
         await command(ids[0], "tab_close")
         await command(ids[0], "tab_switch", context=root_context)
         passed("trusted-click script popup and native Ctrl+N inherit Persona")
         root_context = (await command(ids[0], "tab_list"))["contexts"][0]["context"]
         await command(ids[0], "window_new", url=url)
         assert await evaluate(ids[0], IDENTITY) == identity
+        if font_mode:
+            assert await evaluate(ids[0], font_expression) == font_a
         await command(ids[0], "tab_close", context=root_context)
         for _ in range(30):
             await asyncio.sleep(0.5)

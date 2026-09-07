@@ -29,7 +29,7 @@ def parser() -> argparse.ArgumentParser:
     create.add_argument("--template", help="Select a preset family")
     create.add_argument("--experimental", action="store_true", help="Allow unqualified candidates for local testing")
     create.add_argument("--start", action="store_true", help="Start the new Persona window")
-    for action in ("start", "stop", "status", "show", "probe", "qualify"):
+    for action in ("start", "stop", "status", "show", "probe", "qualify", "requalify"):
         cmd = commands.add_parser(action)
         cmd.add_argument("persona_id")
     command = commands.add_parser("command", help="Operate on one Persona using existing browser actions")
@@ -85,6 +85,8 @@ async def run(args) -> dict | list:
         return await manager.start(args.persona_id)
     if args.action == "stop":
         return await manager.stop(args.persona_id)
+    if args.action == "requalify":
+        return (await manager.requalify(args.persona_id)).to_dict()
     if args.action == "status":
         return manager.status(args.persona_id)
     if args.action == "show":
@@ -110,7 +112,7 @@ def main(argv=None):
     try:
         result = asyncio.run(run(args))
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        if args.action in {"qualify", "bootstrap"} and not result.get("passed"):
+        if args.action in {"qualify", "requalify", "bootstrap"} and not result.get("passed"):
             raise SystemExit(1)
         if args.action == "doctor" and not result.get("ready"):
             raise SystemExit(1)

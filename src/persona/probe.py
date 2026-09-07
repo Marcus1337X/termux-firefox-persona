@@ -8,6 +8,7 @@ resource, while the page collects the values exposed to each JavaScript realm.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import threading
 import time
@@ -510,6 +511,7 @@ class ProbeRunner:
         *,
         timeout: float | None = None,
         geolocation: bool = False,
+        font_config: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         wait_timeout = self.timeout if timeout is None else float(timeout)
         server = LoopbackProbeServer().start()
@@ -526,6 +528,11 @@ class ProbeRunner:
                 page = dict(page)
                 page["geolocation"] = await self._run_geolocation(
                     context, origin, wait_timeout
+                )
+            if font_config is not None:
+                page = dict(page)
+                page["fonts"] = await self._run_font_probe(
+                    context, font_config, wait_timeout
                 )
             http = server.snapshot()
             observations = {"http": http, "page": page,
@@ -645,6 +652,175 @@ class ProbeRunner:
             else:
                 result["restore_error"] = "original permission state was not known"
         return result
+
+    @staticmethod
+    def _normalize_font_config(config: Mapping[str, Any]) -> dict[str, Any]:
+        families = config.get("families", ())
+        if isinstance(families, (str, bytes)) or not isinstance(families, (list, tuple)):
+            families = ()
+        aliases = config.get("aliases", {})
+        if not isinstance(aliases, Mapping):
+            aliases = {}
+        samples = config.get("samples", {})
+        if not isinstance(samples, Mapping):
+            samples = {}
+        blocked = config.get("blocked_families", ())
+        if isinstance(blocked, (str, bytes)) or not isinstance(blocked, (list, tuple)):
+            blocked = ()
+        normalized = {
+            "families": [str(item) for item in families if str(item)],
+            "aliases": {str(key): str(value) for key, value in aliases.items()
+                        if str(key) and str(value)},
+            "samples": {str(key): str(value) for key, value in samples.items()},
+            "blocked_families": [str(item) for item in blocked if str(item)],
+            "policy": str(config.get("policy", "whitelist")),
+            "local_names": dict(config.get("local_names", {})),
+        }
+        digest = hashlib.sha256(json.dumps(normalized, sort_keys=True).encode()).hexdigest()[:16]
+        normalized["missing_family"] = f"__TBP_MISSING_FONT_{digest}__"
+        return normalized
+
+    async def _run_font_probe(
+        self,
+        context: str,
+        font_config: Mapping[str, Any],
+        timeout: float,
+    ) -> dict[str, Any]:
+        """Probe configured local fonts without changing persistent page style."""
+
+        config = self._normalize_font_config(font_config)
+        config_json = json.dumps(config, ensure_ascii=False, separators=(",", ":"))
+        expression = f"""(async() => {{
+          const config = {config_json};
+          const families = Array.from(new Set(config.families || []));
+          const blocked = Array.from(new Set(config.blocked_families || []));
+          const positive = {{}}; const loaded = {{}}; const negative = {{}};
+          const temporaryFaces = [];
+          function errorText(error) {{ return error && error.message ? String(error.message) : String(error); }}
+          async function loadLocal(family, index) {{
+            if (!window.FontFace) return {{ok:false, status:'unsupported', error:'FontFace unavailable'}};
+            let face = null;
+            try {{
+              const localName = config.local_names[family] || family;
+              face = new FontFace('__tbpProbeFont' + index, 'local(' + JSON.stringify(localName) + ')');
+              temporaryFaces.push(face);
+              await face.load();
+              return {{ok:true, status:face.status, face:face}};
+            }} catch (error) {{
+              return {{ok:false, status:face ? face.status : 'error', error:errorText(error)}};
+            }}
+          }}
+          for (let i = 0; i < families.length; i++) {{
+            const family = families[i];
+            const result = await loadLocal(family, i);
+            positive[family] = {{ok:result.ok, status:result.status, error:result.error || null}};
+            if (result.ok) loaded[family] = result.face;
+          }}
+          const negativeNames = [config.missing_family].concat(blocked);
+          for (let i = 0; i < negativeNames.length; i++) {{
+            const family = negativeNames[i];
+            const result = await loadLocal(family, families.length + i + 1);
+            negative[family] = {{failed:!result.ok, status:result.status, error:result.error || null}};
+          }}
+          function metrics(ctx, text) {{
+            const value = ctx.measureText(text);
+            return {{width:value.width, ascent:value.actualBoundingBoxAscent,
+                     descent:value.actualBoundingBoxDescent, left:value.actualBoundingBoxLeft,
+                     right:value.actualBoundingBoxRight}};
+          }}
+          function hash(data) {{
+            let h = 2166136261;
+            for (let i = 0; i < data.length; i++) {{ h ^= data[i]; h = Math.imul(h, 16777619); }}
+            return (h >>> 0).toString(16).padStart(8, '0');
+          }}
+          async function decode(blob) {{
+            if (!blob || !window.createImageBitmap) return {{supported:false}};
+            try {{
+              const bitmap = await createImageBitmap(blob);
+              const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height;
+              const ctx = canvas.getContext('2d'); ctx.drawImage(bitmap, 0, 0); bitmap.close();
+              return {{supported:true, hash:hash(ctx.getImageData(0,0,canvas.width,canvas.height).data)}};
+            }} catch (error) {{ return {{supported:false, error:errorText(error)}}; }}
+          }}
+          async function render(family, text, faceName, generic) {{
+            const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return {{supported:false, error:'2d context unavailable'}};
+            // Use an opaque background so PNG encode/decode preserves the
+            // exact canvas pixels; count pixels that differ from it as ink.
+            ctx.fillStyle = '#102030'; ctx.fillRect(0,0,canvas.width,canvas.height);
+            ctx.fillStyle = '#f0d050';
+            // Real font family names are quoted; CSS generic roles must stay
+            // bare so the browser resolves the alias instead of looking for
+            // a literal family named "sans-serif".
+            const cssFamily = generic ? family : (faceName || family);
+            ctx.font = '32px ' + (generic ? cssFamily : JSON.stringify(cssFamily));
+            const measured = metrics(ctx, text); ctx.fillText(text, 8, 72);
+            const source = ctx.getImageData(0,0,canvas.width,canvas.height).data;
+            const firstHash = hash(source);
+            let inkPixels = 0;
+            for (let i = 0; i < source.length; i += 4) {{
+              if (source[i] !== 16 || source[i + 1] !== 32 || source[i + 2] !== 48 || source[i + 3] !== 255) inkPixels++;
+            }}
+            const nonEmpty = inkPixels > 0;
+            const again = document.createElement('canvas'); again.width = canvas.width; again.height = canvas.height;
+            const againCtx = again.getContext('2d'); againCtx.fillStyle = '#102030'; againCtx.fillRect(0,0,again.width,again.height);
+            againCtx.fillStyle = '#f0d050';
+            againCtx.font = ctx.font; againCtx.fillText(text, 8, 72);
+            const secondPixels = againCtx.getImageData(0,0,again.width,again.height).data;
+            const secondHash = hash(secondPixels);
+            const dataUrl = canvas.toDataURL('image/png');
+            const dataDecoded = await decode(await fetch(dataUrl).then(response => response.blob()));
+            const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+            const blobDecoded = await decode(blob);
+            return {{supported:true, metrics:measured, hash:firstHash, repeatHash:secondHash,
+                    inkPixels:inkPixels, nonEmpty:nonEmpty, stable:firstHash === secondHash, dataUrlLength:dataUrl.length,
+                    dataUrlDecoded:dataDecoded, blobDecoded:blobDecoded,
+                    exportMatches: nonEmpty && dataDecoded.hash === firstHash && blobDecoded.hash === firstHash}};
+          }}
+          const genericAliases = new Set(['sans-serif', 'serif', 'monospace']);
+          const aliasesChecked = Object.keys(config.aliases || {{}})
+            .filter(alias => genericAliases.has(String(alias).toLowerCase()));
+          const observations = {{families:{{}}, aliases:{{}}, aliases_checked:aliasesChecked,
+                                    positive:positive, negative:negative,
+                                    blockedFamilies:blocked, missingFamily:config.missing_family,
+                                    workerFonts:'not_verified', policy:config.policy}};
+          for (const family of families) {{
+            const sample = Object.prototype.hasOwnProperty.call(config.samples || {{}}, family)
+              ? String(config.samples[family]) : 'Aa 0123';
+            const face = loaded[family];
+            if (face) document.fonts.add(face);
+            try {{
+              const localName = face ? face.family : '__tbpProbeMissing';
+              const direct = await render(family, sample, null, false);
+              const local = face ? await render(family, sample, localName, false) : {{supported:false, error:'local face unavailable'}};
+              observations.families[family] = {{sample:sample, positive:positive[family], direct:direct, local:local,
+                metricsMatch: !!(direct.metrics && local.metrics && direct.metrics.width === local.metrics.width),
+                pixelMatch: !!(direct.hash && local.hash && direct.hash === local.hash)}};
+            }} finally {{ if (face) document.fonts.delete(face); }}
+          }}
+          for (const alias of aliasesChecked) {{
+            const target = config.aliases[alias];
+            const sample = Object.prototype.hasOwnProperty.call(config.samples || {{}}, target)
+              ? String(config.samples[target]) : 'Aa 0123';
+            const face = loaded[target];
+            if (face) document.fonts.add(face);
+            try {{
+              const generic = await render(alias, sample, null, true);
+              const targetLocal = face ? await render(target, sample, face.family, false) : {{supported:false}};
+              observations.aliases[alias] = {{target:target, generic:generic, targetLocal:targetLocal,
+                metricsMatch: !!(generic.metrics && targetLocal.metrics && generic.metrics.width === targetLocal.metrics.width),
+                pixelMatch: !!(generic.hash && targetLocal.hash && generic.hash === targetLocal.hash)}};
+            }} finally {{ if (face) document.fonts.delete(face); }}
+          }}
+          for (const face of temporaryFaces) {{ try {{ document.fonts.delete(face); }} catch (_) {{}} }}
+          return observations;
+        }})()"""
+        try:
+            result = await self.client.evaluate(context, expression, timeout=timeout)
+            return result if isinstance(result, Mapping) else {"error": "font probe returned non-object"}
+        except Exception as exc:
+            return {"error": str(exc), "workerFonts": "not_verified", "config": config}
 
     async def _read_page(self, context: str, timeout: float) -> dict[str, Any]:
         deadline = asyncio.get_running_loop().time() + timeout

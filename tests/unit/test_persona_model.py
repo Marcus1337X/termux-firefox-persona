@@ -373,5 +373,37 @@ class SoftwareGlxTemplateTests(unittest.TestCase):
             PersonaTemplate.from_mapping(data)
 
 
+class FontTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.template = TemplateCatalog.default().get("linux-firefox-fonts-glx-v1")
+
+    def test_font_variants_require_measured_fonts_and_distinct_sets(self):
+        self.assertIn("fonts_window", self.template.required_capabilities)
+        configs = [self.template.expand(i, "154.0.1") for i in range(4)]
+        self.assertEqual(len({tuple(c["fonts"]["families"]) for c in configs}), 2)
+        for config in configs:
+            self.assertEqual(set(config["fonts"]["families"]), set(config["fonts"]["samples"]))
+
+    def test_invalid_font_policy_is_rejected_before_launch(self):
+        cases = [("policy", "all"), ("families", []), ("families", ["bad,name"]),
+                 ("families", ["DejaVu Sans", "DejaVu Sans"]),
+                 ("blocked_families", ["DejaVu Sans"]),
+                 ("aliases", {"sans-serif": "DejaVu Sans"}),
+                 ("aliases", {"sans-serif": "Absent", "serif": "Absent", "monospace": "Absent"}),
+                 ("samples", {})]
+        for key, value in cases:
+            with self.subTest(key=key, value=value):
+                data = self.template.to_dict()
+                data["variants"][0]["fonts"][key] = value
+                with self.assertRaises(TemplateError):
+                    PersonaTemplate.from_mapping(data)
+
+    def test_missing_fonts_is_not_a_font_preset(self):
+        data = self.template.to_dict()
+        del data["variants"][0]["fonts"]
+        with self.assertRaisesRegex(TemplateError, "requires fonts"):
+            PersonaTemplate.from_mapping(data)
+
+
 if __name__ == "__main__":
     unittest.main()

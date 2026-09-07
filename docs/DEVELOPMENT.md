@@ -1,5 +1,19 @@
 # 开发与本机验收记录
 
+## 2026-09-07：私有字体集合与旧身份重新验证
+
+新增 `linux-firefox-fonts-glx-v1`：中文/英文 × 明暗四个组合均已通过本机完整资格检查，合格组合增至 20 个。明色使用 DejaVu Sans/Serif/Sans Mono、Noto Sans CJK SC、Noto Color Emoji；暗色将 DejaVu Serif 换为 Noto Serif CJK SC。没有安装 Liberation。
+
+- Fontconfig 通过 ctypes 查询实际字体；找不到指定 family 时拒绝系统 fallback。每个实例独立配置、字体目录和缓存，TTC 中未选地区的字面也被排除。
+- Firefox 的 `font.system.whitelist` 会禁用所有 CSS `local()`，因此不启用该 pref；以私有 Fontconfig 约束集合，并禁用 Firefox 捆绑字体。
+- `local_names` 保存真实完整字体名称，例如 `Noto Sans CJK SC Regular`。探针要求选定字体加载成功、排除字体及随机不存在的字体加载失败。
+- Canvas 使用固定不透明背景，检查非空文字、重复像素、直接 family 与本地 FontFace 的完整 TextMetrics/像素匹配，以及两种 PNG 导出解码结果。资格判定核对实际 hash 和测量，不能只提交通过标志。
+- 三个 CSS generic 别名独立验证；CJK/emoji 作为语言回退角色，不冒充 CSS generic。Worker 字体仍为 `not_verified`。
+- 环境快照补充 Android 系统字体、Firefox 捆绑字体及 Fontconfig 配置变化。原 16 个组合均通过显式 `requalify` 在新快照下重新验证。
+- 实机验证旧严格 Persona `persona_c9a8c8f7df024ae597eb5242a0b5937f` 的 ID、种子、最终配置、profile 目录及原文件保持，只有环境与资格更新。失败、取消、并发、环境再变和版本不兼容有单元测试覆盖。
+
+本地 106 项单元测试通过，编译及差异检查通过。字体双实例 12 组生命周期验收全部通过，种子为 1/4，身份为 `persona_d06e5b276eaa4edcba329eb8d22074d6` / `persona_5c3d31c952f74635a31c4e7319d69b5f`。两份截图已检查；双实例进程数 30，结束时 7，测试实例均已停止。完整探针后重启同一 profile 再进入双实例阶段，避免探针保留的内容进程占用预算。本次 CI 待推送后记录。
+
 ## 2026-09-07：地理位置与外观组合
 
 新增 `linux-firefox-region-appearance-v1` 的四个组合：上海/纽约各自配明暗外观，坐标和时区受预设约束，精度为 50 米。已有八个基础组合保持原验证范围。
@@ -57,10 +71,10 @@
 未完成或需继续验证：
 
 - 脚本弹窗、标签页拖出及手动 Ctrl+N 尚未分别验收；通过 BiDi 创建的普通派生新窗口不能替代这些入口的验证。
-- 第一批剩余地理位置、字体、完整外观和初始/动态生命周期行为。
+- 第一批剩余 Liberation 字体、标签页拖出和未覆盖的初始/动态生命周期行为；地区/外观与 DejaVu/Noto 字体见上方后续验收。
 - WebGL 创建失败，已取得 `FEATURE_FAILURE_NO_DISPLAY` / `EXHAUSTED_DRIVERS` 错误；尚无合格核显身份模板。基础真实后端组合通过不代表核显模板通过。
 - 第二批完整图形、Canvas、Audio、媒体和设备行为，以及第三批其余存储、权限、隐私和网络验收。
-- 环境变化后的旧 Persona 会拒绝恢复；本轮尚无保持原 persona_id/profile/最终配置的重新资格入口，不会静默改写身份。
+- 环境变化后的旧 Persona 会拒绝直接恢复；现已提供上文所述 requalify，Firefox 版本不兼容时仍需创建新身份。
 - 后续批次继续使用私有仓库同步，CI 不替代本机资格。
 
 两实例通过表明本次条件下的并发可用，不代表更高并发上限或任意重页面都已验证。最初多进程测试曾导致 Termux 中断，现有预算属于本地准入估算，后续负载仍需按设备能力控制。

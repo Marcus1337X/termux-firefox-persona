@@ -2,13 +2,13 @@
 
 ## 本轮进度更新（2026-09-07）
 
-本轮本地 79 项单元测试通过。地区/外观模板 4/4、软件 GLX 模板 4/4 已完成实机 bootstrap；此前基础模板 8/8 仍有效，当前共有 16 个合格组合。地区/外观八组实机验收全部通过，包括重启后位置与 prompt 权限保持、真实点击触发脚本弹窗、Ctrl+N 新窗口继承和主窗口联动退出。标签页拖出尚未验收，包含该行为的综合条目仍未完成。
+本地 106 项单元测试通过。新增字体模板四个组合全部通过实机 bootstrap；原 16 个组合在补全字体环境快照后，经显式 requalify 全部重新通过，当前合格组合共 20 个。
 
-软件 GLX 路径已实际验证 WebGL1/2 shader 编译及链接、整幅红色 RGBA 输出和 RGBA8 framebuffer 绿色 RGBA 输出。该路径使用真实 Mesa llvmpipe 软件后端，不是核显身份模板。precision、limits 和 extensions 目前主要为查询结果，未完成全部功能行为验收；Worker/OffscreenCanvas WebGL 尚未验证。软件 GLX 的八组生命周期验收也已全部通过；双实例运行时应用进程数为 30，测试实例均已停止。
+字体实现包含两套真实 DejaVu/Noto/Emoji 集合、独立 Fontconfig 目录与缓存、TTC 字面筛选、CSS local() 正反向加载、三个通用别名、Canvas 像素、TextMetrics 和两种 PNG 导出解码检查。字体模板的 12 组实机生命周期验收全部通过：双实例可见集合及同文像素/测量不同，重启结果保持，标签页、脚本弹窗与 Ctrl+N 继承。两份截图已检查；双实例应用进程数为 30，测试实例均已停止。完整探针后 Firefox 会保留额外内容进程，验收在单实例资格检查后重启原 profile，再进入双实例阶段，不提高预算。
 
-地理位置及四项外观媒体查询已具备当前模板范围内的实机证据；字体功能尚未实现，完整第一批和第二批仍未完成。本轮实现提交 `8e2faeb` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34103445934)。
+新增 requalify 命令，保持原 ID、种子、最终配置和 profile；验证成功、进程停止且环境稳定后才更新资格。实机已验证旧严格身份保留，失败/取消/并发/版本不兼容及环境再次变化有单测覆盖。本轮 CI 待推送后记录。
 
-下列勾选仅表示相应明确子项已有证据；包含多项行为的条目，在全部验证前保持未勾选。环境变更后的旧 Persona 会明确拒绝恢复，本轮尚未提供保留原身份的重新资格流程；不会静默更新其配置。
+地理位置、四项外观及软件 GLX WebGL1/2 的 shader/像素/FBO 资格继续有效。Liberation、Worker 字体、Worker/OffscreenCanvas WebGL、完整 graphics precision/limits/extensions、核显身份、媒体/网络及标签页拖出仍未完成。完整第一批和第二批尚未全部完成。下列勾选仅表示明确子项已有证据，综合条目保持其原验收门槛。
 
 > 目标：在 Android Termux + Termux:X11/Xvfb 中，为每个独立的 Firefox 顶层窗口创建一套经过约束的 Linux Firefox Persona。Persona 来自预先定义的合理模板，并在模板约束内随机组合；它不是允许用户逐字段填写的任意伪装配置。
 
@@ -179,13 +179,13 @@ instance_id
 
 ## 字体
 
-- [ ] DejaVu 字体族
+- [x] DejaVu 字体族
 - [ ] Liberation 字体族
-- [ ] Noto 字体族
-- [ ] Noto Color Emoji
-- [ ] 按 locale 配置 Noto CJK 等语言字体
-- [ ] 在 Termux 中确认字体实际安装、fontconfig 查找顺序和 Firefox 可见字体集合。
-- [ ] 用字体枚举、Canvas、TextMetrics 和截图探针验证字体不是仅写入配置文件；结果不稳定时模板不得进入严格池。
+- [x] Noto 字体族
+- [x] Noto Color Emoji
+- [x] 按 locale 配置 Noto CJK 等语言字体
+- [x] 在 Termux 中确认字体实际安装、fontconfig 查找顺序和 Firefox 可见字体集合。
+- [x] 用字体枚举、Canvas、TextMetrics 和截图探针验证字体不是仅写入配置文件；结果不稳定时模板不得进入严格池。
 
 ## 推荐实现层与本批验证
 
@@ -229,11 +229,11 @@ instance_id
 ## Canvas
 
 - [ ] Canvas 2D rendering
-- [ ] 字体 Canvas rendering
-- [ ] `getImageData()`
-- [ ] `toDataURL()`
-- [ ] `toBlob()`
-- [ ] `TextMetrics`
+- [x] 字体 Canvas rendering（当前字体模板的 Window 范围）
+- [x] `getImageData()`（当前字体模板的 Window 范围）
+- [x] `toDataURL()`（当前字体模板的 Window 范围）
+- [x] `toBlob()`（当前字体模板的 Window 范围）
+- [x] `TextMetrics`（当前字体模板的 Window 范围）
 - [ ] WebGL Canvas rendering
 - [ ] 通过固定测试图、像素输出、字体测量和 WebGL 结果验证；允许记录实际后端差异，但不把固定字符串当作像素行为。
 

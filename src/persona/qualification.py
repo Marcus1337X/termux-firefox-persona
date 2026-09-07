@@ -25,6 +25,32 @@ from .model import (
 
 
 _REALMS = ("window", "dedicated", "shared", "service")
+_CSS_GENERIC_ALIASES = frozenset({"sans-serif", "serif", "monospace"})
+
+
+def _font_rendering_valid(value: Any) -> bool:
+    rendered = _mapping(value)
+    digest = rendered.get("hash")
+    metrics = _mapping(rendered.get("metrics"))
+    return (
+        all(rendered.get(key) is True for key in ("supported", "nonEmpty", "stable", "exportMatches"))
+        and isinstance(digest, str) and len(digest) == 8
+        and all(char in "0123456789abcdef" for char in digest)
+        and rendered.get("repeatHash") == digest
+        and type(rendered.get("inkPixels")) is int and rendered["inkPixels"] > 0
+        and all(type(metrics.get(key)) in (int, float) and math.isfinite(metrics[key])
+                for key in ("width", "ascent", "descent", "left", "right"))
+        and metrics["width"] > 0
+        and all(_mapping(rendered.get(key)).get("supported") is True
+                and _mapping(rendered.get(key)).get("hash") == digest
+                for key in ("dataUrlDecoded", "blobDecoded"))
+    )
+
+
+def _font_renderings_match(first: Any, second: Any) -> bool:
+    first, second = _mapping(first), _mapping(second)
+    return (_font_rendering_valid(first) and _font_rendering_valid(second)
+            and first["metrics"] == second["metrics"] and first["hash"] == second["hash"])
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -500,6 +526,110 @@ def qualify_probe(
         ))
         if not geo_ok:
             diagnostic_reasons.append("geolocation grant/deny/restore or position does not match")
+
+    if "fonts_window" in template.required_capabilities:
+        fonts_config = _mapping(final_config.get("fonts"))
+        fonts_observed = _mapping(page.get("fonts"))
+        expected_families = fonts_config.get("families", ())
+        all_aliases = _mapping(fonts_config.get("aliases"))
+        # emoji and cjk are persona fallback roles, not CSS generic family
+        # names.  They are covered by their family samples; only these three
+        # CSS generics are meaningful alias equivalence checks here.
+        expected_aliases = {
+            str(alias): target for alias, target in all_aliases.items()
+            if str(alias).lower() in _CSS_GENERIC_ALIASES
+        }
+        expected_samples = _mapping(fonts_config.get("samples"))
+        expected_blocked = fonts_config.get("blocked_families", ())
+        positive = _mapping(fonts_observed.get("positive"))
+        observed_families = _mapping(fonts_observed.get("families"))
+        observed_aliases = _mapping(fonts_observed.get("aliases"))
+        observed_aliases_checked = fonts_observed.get("aliases_checked")
+        negative = _mapping(fonts_observed.get("negative"))
+        fonts_ok = (
+            fonts_config.get("policy") == "whitelist"
+            and isinstance(expected_families, Sequence)
+            and not isinstance(expected_families, (str, bytes))
+            and bool(expected_families)
+            and fonts_observed.get("workerFonts") == "not_verified"
+        )
+        observed_font_values: dict[str, Any] = {
+            "families": {}, "aliases": {}, "blocked_families": {},
+            "aliases_checked": observed_aliases_checked,
+            "missing_family": fonts_observed.get("missingFamily"),
+            "worker_fonts": fonts_observed.get("workerFonts", "not_verified"),
+            "policy": fonts_observed.get("policy"),
+        }
+        for family_value in expected_families if isinstance(expected_families, Sequence) else ():
+            family = str(family_value)
+            item = _mapping(observed_families.get(family))
+            positive_item = _mapping(positive.get(family, item.get("positive")))
+            sample_present = family in expected_samples
+            sample = str(expected_samples.get(family, ""))
+            observed_font_values["families"][family] = item
+            fonts_ok = fonts_ok and bool(item)
+            fonts_ok = fonts_ok and positive_item.get("ok") is True
+            fonts_ok = fonts_ok and sample_present
+            fonts_ok = fonts_ok and item.get("sample") == sample
+            fonts_ok = fonts_ok and item.get("metricsMatch") is True and item.get("pixelMatch") is True
+            fonts_ok = fonts_ok and _font_renderings_match(item.get("direct"), item.get("local"))
+            for mode in ("direct", "local"):
+                rendered = _mapping(item.get(mode))
+                fonts_ok = fonts_ok and rendered.get("supported") is True
+                fonts_ok = fonts_ok and rendered.get("nonEmpty") is True
+                fonts_ok = fonts_ok and rendered.get("stable") is True
+                fonts_ok = fonts_ok and rendered.get("exportMatches") is True
+        if isinstance(expected_blocked, Sequence) and not isinstance(expected_blocked, (str, bytes)):
+            for family_value in expected_blocked:
+                family = str(family_value)
+                item = _mapping(negative.get(family))
+                observed_font_values["blocked_families"][family] = item
+                fonts_ok = fonts_ok and item.get("failed") is True
+        missing_family = fonts_observed.get("missingFamily")
+        missing_item = _mapping(negative.get(str(missing_family))) if missing_family else {}
+        fonts_ok = fonts_ok and bool(missing_item) and missing_item.get("failed") is True
+        observed_font_values["missing"] = missing_item
+        if not isinstance(expected_aliases, Mapping):
+            fonts_ok = False
+        fonts_ok = fonts_ok and (
+            isinstance(observed_aliases_checked, Sequence)
+            and not isinstance(observed_aliases_checked, (str, bytes))
+            and sorted(str(alias) for alias in observed_aliases_checked)
+            == sorted(expected_aliases)
+        )
+        for alias_value, target_value in expected_aliases.items():
+            alias, target = str(alias_value), str(target_value)
+            item = _mapping(observed_aliases.get(alias))
+            observed_font_values["aliases"][alias] = item
+            fonts_ok = fonts_ok and bool(item)
+            fonts_ok = fonts_ok and item.get("target") == target
+            fonts_ok = fonts_ok and item.get("metricsMatch") is True and item.get("pixelMatch") is True
+            fonts_ok = fonts_ok and _font_renderings_match(item.get("generic"), item.get("targetLocal"))
+            for mode in ("generic", "targetLocal"):
+                rendered = _mapping(item.get(mode))
+                fonts_ok = fonts_ok and rendered.get("supported") is True
+                fonts_ok = fonts_ok and rendered.get("nonEmpty") is True
+                fonts_ok = fonts_ok and rendered.get("stable") is True
+                fonts_ok = fonts_ok and rendered.get("exportMatches") is True
+        evidence.append(_evidence(
+            "fonts_window", _status(fonts_ok), snapshot_obj,
+            {"families": fonts_config.get("families"), "aliases": fonts_config.get("aliases"),
+             "aliases_checked": sorted(expected_aliases),
+             "samples": fonts_config.get("samples"), "blocked_families": fonts_config.get("blocked_families"),
+             "policy": fonts_config.get("policy")},
+            observed_font_values,
+            ("window",),
+            (
+                "observations.page.fonts.positive",
+                "observations.page.fonts.families.metrics/pixels/exports",
+                "observations.page.fonts.aliases.metrics/pixels/exports",
+                "observations.page.fonts.negative.blocked_families",
+                "observations.page.fonts.negative.missingFamily",
+                "observations.page.fonts.workerFonts=not_verified",
+            ),
+        ))
+        if not fonts_ok:
+            diagnostic_reasons.append("font whitelist, aliases, negative loads or canvas evidence do not match")
 
     if "webgl_window" in template.required_capabilities:
         graphics = _mapping(final_config.get("graphics"))

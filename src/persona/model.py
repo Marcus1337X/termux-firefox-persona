@@ -141,6 +141,37 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
     if header_languages != [item.lower() for item in languages]:
         fail("accept_language sequence must match languages")
 
+    fonts = config.get("fonts")
+    if template_id == "linux-firefox-fonts-glx-v1" and fonts is None:
+        fail("font preset requires fonts")
+    if fonts is not None:
+        if not isinstance(fonts, Mapping) or fonts.get("policy") != "whitelist":
+            fail("fonts must declare a whitelist policy")
+        families = fonts.get("families")
+        def font_names(value):
+            return isinstance(value, (list, tuple)) and all(
+                isinstance(name, str) and name.strip() and len(name) <= 128
+                and not any(char in name for char in (",", "\n", "\r", "\x00")) for name in value)
+        if not font_names(families) or not 1 <= len(families) <= 16 or len(set(families)) != len(families):
+            fail("fonts.families must contain unique bounded family names")
+        blocked = fonts.get("blocked_families")
+        if not font_names(blocked) or not blocked or set(families) & set(blocked):
+            fail("fonts.blocked_families must be nonempty and disjoint")
+        local_names = fonts.get("local_names", {})
+        if (not isinstance(local_names, Mapping)
+                or not set(local_names).issubset(set(families) | set(blocked))
+                or not font_names(list(local_names.values()))):
+            fail("font local names must name selected or blocked font faces")
+        aliases = fonts.get("aliases")
+        if (not isinstance(aliases, Mapping)
+                or not {"sans-serif", "serif", "monospace"}.issubset(aliases)
+                or not set(aliases).issubset({"sans-serif", "serif", "monospace", "emoji", "cjk"})
+                or any(value not in families for value in aliases.values())):
+            fail("font aliases must refer to selected families")
+        samples = fonts.get("samples")
+        if (not isinstance(samples, Mapping) or set(samples) != set(families)
+                or any(not isinstance(value, str) or not value.strip() or len(value) > 256 for value in samples.values())):
+            fail("every selected font requires a bounded rendering sample")
     appearance = config.get("appearance")
     if appearance is not None:
         if not isinstance(appearance, Mapping):
@@ -165,7 +196,7 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
             fail("geolocation.permission is invalid")
     # Region relationships belong to this finite preset family, not to every
     # multilingual desktop. Other families can define different relationships.
-    if template_id in {"linux-firefox-region-appearance-v1", "linux-firefox-software-glx-v1"}:
+    if template_id in {"linux-firefox-region-appearance-v1", "linux-firefox-software-glx-v1", "linux-firefox-fonts-glx-v1"}:
         regions = {"zh-CN": ("Asia/Shanghai", 31.2304, 121.4737),
                    "en-US": ("America/New_York", 40.7128, -74.0060)}
         expected = regions.get(locale["locale"])
@@ -174,7 +205,7 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
             fail("geolocation and timezone must match this preset's locale region")
         if "contrast" not in appearance:
             fail("regional appearance requires an explicit contrast preference")
-    if template_id == "linux-firefox-software-glx-v1":
+    if template_id in {"linux-firefox-software-glx-v1", "linux-firefox-fonts-glx-v1"}:
         graphics = config.get("graphics")
         expected_graphics = {
             "identity_class": "native-linux-firefox", "hardware_class": "software",

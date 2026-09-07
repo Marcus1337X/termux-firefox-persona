@@ -243,6 +243,67 @@ class QualificationTests(unittest.TestCase):
         webgl = next(item for item in failed.evidence if item.capability == "webgl_window")
         self.assertEqual(webgl.status, "partial")
 
+    def test_fonts_window_requires_positive_negative_and_canvas_evidence(self) -> None:
+        base_config = copy.deepcopy(self.template.base_config)
+        base_config["fonts"] = {
+            "families": ["Probe Sans"],
+            "aliases": {"sans-serif": "Probe Sans", "serif": "Probe Sans",
+                         "monospace": "Probe Sans", "emoji": "Probe Sans", "cjk": "Probe Sans"},
+            "samples": {"Probe Sans": "Aa 上海 😀"},
+            "blocked_families": ["Blocked Font"],
+            "policy": "whitelist",
+        }
+        template = replace(
+            self.template, base_config=base_config,
+            required_capabilities=self.template.required_capabilities + ("fonts_window",),
+        )
+        config = template.expand(0, "154.0.1")
+        persona = Persona.build(seed=13, template=template, final_config=config,
+                                snapshot=self.snapshot, experimental=True)
+        probe = self._report()
+        rendered = {
+            "supported": True, "nonEmpty": True, "stable": True, "exportMatches": True,
+            "metrics": {"width": 42, "ascent": 24, "descent": 7, "left": -1, "right": 41},
+            "inkPixels": 123, "hash": "abcd1234", "repeatHash": "abcd1234",
+            "dataUrlDecoded": {"supported": True, "hash": "abcd1234"},
+            "blobDecoded": {"supported": True, "hash": "abcd1234"},
+        }
+        probe["observations"]["page"]["fonts"] = {
+            "policy": "whitelist", "workerFonts": "not_verified",
+            "aliases_checked": ["sans-serif", "serif", "monospace"],
+            "missingFamily": "__TBP_MISSING_FONT__",
+            "positive": {"Probe Sans": {"ok": True, "status": "loaded"}},
+            "negative": {
+                "__TBP_MISSING_FONT__": {"failed": True},
+                "Blocked Font": {"failed": True},
+            },
+            "families": {"Probe Sans": {
+                "sample": "Aa 上海 😀", "positive": {"ok": True},
+                "direct": copy.deepcopy(rendered), "local": copy.deepcopy(rendered),
+                "metricsMatch": True, "pixelMatch": True,
+            }},
+            "aliases": {
+                alias: {
+                    "target": "Probe Sans", "generic": copy.deepcopy(rendered),
+                    "targetLocal": copy.deepcopy(rendered),
+                    "metricsMatch": True, "pixelMatch": True,
+                }
+                for alias in ("sans-serif", "serif", "monospace")
+            },
+        }
+        report = qualify_probe(persona, self.snapshot, probe, catalog=TemplateCatalog([template]))
+        self.assertTrue(report.passed)
+
+        broken = copy.deepcopy(probe)
+        broken["observations"]["page"]["fonts"]["negative"]["Blocked Font"]["failed"] = False
+        failed = qualify_probe(persona, self.snapshot, broken, catalog=TemplateCatalog([template]))
+        self.assertFalse(failed.passed)
+        fonts = next(item for item in failed.evidence if item.capability == "fonts_window")
+        self.assertEqual(fonts.status, "partial")
+        tampered = copy.deepcopy(probe)
+        tampered["observations"]["page"]["fonts"]["families"]["Probe Sans"]["direct"]["blobDecoded"]["hash"] = "ffffffff"
+        self.assertFalse(qualify_probe(persona, self.snapshot, tampered, catalog=TemplateCatalog([template])).passed)
+
 
 if __name__ == "__main__":
     unittest.main()

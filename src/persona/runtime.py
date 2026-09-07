@@ -61,6 +61,21 @@ def firefox_settings(config: dict) -> tuple[dict, dict]:
         # The explicit software-GLX preset avoids this device's failing EGL
         # display path. Existing presets retain their original GL policy.
         prefs["gfx.x11-egl.force-disabled"] = True
+    if config.get("fonts"):
+        fonts = config["fonts"]
+        # Firefox's whitelist disables every CSS local() source. The private
+        # Fontconfig inventory enforces the selection without disabling them.
+        prefs["font.system.whitelist"] = ""
+        prefs["gfx.bundled-fonts.activate"] = 0
+        for group in ("x-western", "x-unicode", "zh-CN", "zh-TW"):
+            for generic in ("sans-serif", "serif", "monospace"):
+                family = fonts["aliases"][generic]
+                prefs[f"font.name.{generic}.{group}"] = family
+                fallback = fonts["aliases"].get("cjk")
+                prefs[f"font.name-list.{generic}.{group}"] = ",".join(dict.fromkeys(
+                    name for name in (family, fallback) if name))
+        if fonts["aliases"].get("emoji"):
+            prefs["font.name-list.emoji"] = fonts["aliases"]["emoji"]
     return prefs, env
 
 
@@ -81,7 +96,7 @@ async def apply_browser_overrides(bidi, config: dict) -> dict:
 class PersonaRuntime:
     def __init__(self, manager: PersonaManager, persona_id: str, instance_id: str):
         self.manager = manager
-        self.persona = manager.store.load(persona_id)
+        self.persona = manager.load_worker_persona(persona_id, instance_id)
         self.paths = manager.paths(persona_id)
         self.state = read_json(self.paths["state"]) or {}
         if self.state.get("instance_id") != instance_id:
@@ -149,6 +164,11 @@ class PersonaRuntime:
                 if config.get("graphics", {}).get("context_backend") == "glx" and self.manager.backend != "software":
                     raise ValueError("The software GLX preset requires the software execution backend")
                 prefs, env = firefox_settings(config)
+                if config.get("fonts"):
+                    from .fonts import build_persona_fontconfig
+                    bundle = build_persona_fontconfig(self.paths["directory"] / "font-environment", config["fonts"])
+                    env.update(bundle.env)
+                    prefs.update(bundle.prefs)
                 self.pilot = Pilot(
                     browser="firefox", display=display,
                     window_size=f"{config['display']['screen_width']},{config['display']['screen_height']}",
@@ -294,6 +314,8 @@ class PersonaRuntime:
         return await self.bidi.evaluate(context, expression, timeout=timeout)
 
     async def dispatch(self, action: str, params: dict):
+        if self.state.get("mode") == "requalify" and action not in {"status", "probe", "shutdown"}:
+            raise ValueError("Validation workers only accept status, probe and shutdown")
         if action == "status":
             return {"persona_id": self.persona.persona_id, "instance_id": self.instance_id,
                     "display": self.state["display"], "context": self.context,
@@ -340,7 +362,8 @@ class PersonaRuntime:
             try:
                 await self.select_context(probe_context)
                 return await ProbeRunner(self.bidi, timeout=15).run(
-                    probe_context, geolocation="geolocation" in self.persona.final_config)
+                    probe_context, geolocation="geolocation" in self.persona.final_config,
+                    font_config=self.persona.final_config.get("fonts"))
             finally:
                 await self.bidi.send("browsingContext.close", {"context": probe_context})
                 await self.select_context(original)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 import os
 import re
 import stat
@@ -172,6 +173,28 @@ class PersonaStore:
         path = self._report_path(report, self.qualifications_dir)
         self._write_atomic(path, report.to_dict())
         return path
+
+    def commit_requalification(self, original: Persona, snapshot: CapabilitySnapshot,
+                               qualification: QualificationReport) -> Persona:
+        """Commit under the manager's lifecycle lock, with identity preserved.
+
+        Supporting files are durable before the single atomic Persona replace.
+        A crash beforehand leaves the original metadata unchanged.
+        """
+        if self.load(original.persona_id).to_dict() != original.to_dict():
+            raise PersonaStoreError("Saved Persona changed during requalification")
+        if (qualification.passed is not True or qualification.full_combination is not True
+                or qualification.environment_fingerprint != snapshot.fingerprint):
+            raise PersonaStoreError("Requalification must pass for the new snapshot")
+        updated = replace(original, capability_snapshot_fingerprint=snapshot.fingerprint,
+                          qualification=qualification)
+        # Reuse persisted schema/config/qualification binding validation rather
+        # than silently rewriting any saved identity field.
+        updated = Persona.from_mapping(updated.to_dict())
+        self.save_snapshot(snapshot)
+        self.save_qualification(qualification)
+        self.save(updated)
+        return updated
 
     def load_qualification(
         self,

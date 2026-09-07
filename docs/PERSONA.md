@@ -82,11 +82,31 @@ python cli.py persona create --template linux-firefox-software-glx-v1 --start
 
 `python -m tests.persona_graphics_live` 可串行比较默认、强制 GLX、强制 EGL 三种路径，结果保存在私有 `~/.tbp/graphics-diagnostics`。诊断脚本不会授予模板资格。
 
+`linux-firefox-fonts-glx-v1` 在软件 GLX 的四个地区外观组合上增加两套实际字体集合。明色集合使用 DejaVu Sans、Serif、Sans Mono、Noto Sans CJK SC 和 Noto Color Emoji；暗色集合将 DejaVu Serif 替换为 Noto Serif CJK SC。所有字体必须真实安装，缺少字体时启动失败。
+
+```sh
+python cli.py persona bootstrap --template linux-firefox-fonts-glx-v1
+python cli.py persona create --template linux-firefox-fonts-glx-v1 --start
+python -m tests.persona_live --template linux-firefox-fonts-glx-v1
+```
+
+每个实例使用私有 Fontconfig 配置、字体目录和缓存，排除未选中的字体及 CJK 合集中其他地区的字面。Firefox 自带字体在此模板中禁用。没有修改系统字体目录，也没有安装 Liberation，因此不包含 Liberation 资格。
+
+字体资格检查 CSS `local()` 的正反向加载、三个通用字体别名、实际 Canvas 像素与 TextMetrics，以及 `toDataURL`/`toBlob` 导出后解码的像素一致性。字体文件的完整名称与 family 名称分别保存；不会用不存在的字体名称冒充支持。未启用 Firefox 的 `font.system.whitelist`，因为它会禁用所有 CSS `local()` 来源；集合由私有 Fontconfig 约束。Worker 字体尚未验证。
+
 资格报告只覆盖模板列出的必需能力；外观、输入、Canvas 和 Audio 的额外观测不等于完整第二批验收。核显模板仍是候选；只修改 renderer 名称不能获得核显资格。`software` 为默认执行后端，`native` 仅表示不强制软件渲染，不能自动等同于手机 GPU 加速。
 
 配置、资格、profile 和日志默认存于 Termux 私有目录 `~/.tbp/personas`。`--root` 可指定另一个私有测试目录，放在子命令之前。共享存储不能用作 profile 根目录。Firefox/后端/字体环境变化会使原资格失效，不会静默修改已保存身份。
 
-默认截图和其他相对导出路径位于该 Persona 私有实例目录，下载位于其 profile 的 `downloads`。环境变化后，当前版本拒绝恢复旧身份；尚未提供保持原 profile 的重新授予资格流程。重新运行 `bootstrap` 可以验证当前环境的新组合，再创建新身份。同环境的组合重测失败也会撤销旧严格 Persona 的启动资格。
+默认截图和其他相对导出路径位于该 Persona 私有实例目录，下载位于其 profile 的 `downloads`。环境变化后，先停止旧身份，再显式重新验证：
+
+```sh
+python cli.py persona stop PERSONA_ID
+python cli.py persona requalify PERSONA_ID
+python cli.py persona start PERSONA_ID
+```
+
+`requalify` 保留原 ID、种子、最终配置和 profile。验证期间只开放状态、探针和停止操作；完整探针通过、测试进程退出且环境未再次变化后，才更新保存的环境绑定与资格。失败或取消保留原身份元数据。Firefox 版本变化导致原 UA/版本组合不再兼容时，需要新建 Persona，不能通过重新验证改写身份。重新运行 `bootstrap` 则验证当前环境的组合，供新建身份使用。同环境的组合重测失败也会撤销旧严格 Persona 的启动资格。
 
 独立 Xvfb 窗口属于不同虚拟显示；本版本不提供把所有虚拟桌面平铺到 Termux:X11 的展示界面。截图、输入和上下文操作通过 Persona 管理接口完成。
 
