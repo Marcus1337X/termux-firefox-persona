@@ -428,6 +428,7 @@ class PersonaRuntime:
                     font_config=self.persona.final_config.get("fonts"),
                     worker_graphics=bool(self.persona.final_config.get("worker_graphics")),
                     audio_config=self.persona.final_config.get("audio"),
+                    media_config=self.persona.final_config.get("media"),
                     trusted_click=lambda target: self._native_click({"target": target}))
             finally:
                 await self.bidi.send("browsingContext.close", {"context": probe_context})

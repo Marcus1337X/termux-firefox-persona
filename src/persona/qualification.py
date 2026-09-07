@@ -886,6 +886,22 @@ def qualify_probe(
             if not valid:
                 diagnostic_reasons.append(f"{capability} behavior is missing or does not match")
 
+    if "media_codecs_window" in template.required_capabilities:
+        from .media_qualification import validate_media
+        media_config = _mapping(final_config.get("media"))
+        media_observed = _mapping(page.get("media_behavior"))
+        valid, failed_codecs = validate_media(media_config, media_observed,
+                                             _mapping(final_config.get("audio")).get("sample_rate"))
+        evidence.append(_evidence(
+            "media_codecs_window", _status(valid), snapshot_obj, media_config,
+            {"data": media_observed, "failed_codecs": failed_codecs,
+             "scope": "finite-native-decode-playback", "webrtc": "not_verified",
+             "physical_input": "not_verified", "physical_output": "not_verified"},
+            ("window",), ("observations.page.media_behavior",)))
+        if not valid:
+            diagnostic_reasons.append("native media decoding/playback failed: " +
+                                      (", ".join(failed_codecs) or "activation, configuration or cleanup"))
+
     if "graphics_full_combination" in template.required_capabilities:
         graphics = _mapping(final_config.get("graphics"))
         webgl = _mapping(page.get("webgl"))

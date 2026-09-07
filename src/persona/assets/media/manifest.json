@@ -1,0 +1,64 @@
+{
+  "id": "native-codecs-v1",
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "id": "h264",
+      "filename": "h264.mp4",
+      "mime": "video/mp4",
+      "content_type": "video/mp4; codecs=\"avc1.42c00a\"",
+      "kind": "video",
+      "sha256": "12da459783a66258a819eb330e1d2c66ee34738cabd402970609ba1f9b0d3850",
+      "bitrate": 6936,
+      "framerate": 8
+    },
+    {
+      "id": "vp8",
+      "filename": "vp8.webm",
+      "mime": "video/webm",
+      "content_type": "video/webm; codecs=\"vp8\"",
+      "kind": "video",
+      "sha256": "fd0eaf7c744a6783e51f427529cb7a08c80fc414f70370330a215233898f9bf4",
+      "bitrate": 5488,
+      "framerate": 8
+    },
+    {
+      "id": "vp9",
+      "filename": "vp9.webm",
+      "mime": "video/webm",
+      "content_type": "video/webm; codecs=\"vp09.00.10.08\"",
+      "kind": "video",
+      "sha256": "6407b4c10fd72aea3c5c8dc172545e8eb9b2cc09895bc693de66b3cff945dc37",
+      "bitrate": 3716,
+      "framerate": 8
+    },
+    {
+      "id": "av1",
+      "filename": "av1.webm",
+      "mime": "video/webm",
+      "content_type": "video/webm; codecs=\"av01.0.00M.08\"",
+      "kind": "video",
+      "sha256": "884332f3ca6bb59dbbf1c5b635dc47575e077ac5e1df00a479de13413051688f",
+      "bitrate": 6096,
+      "framerate": 8
+    },
+    {
+      "id": "aac",
+      "filename": "aac.m4a",
+      "mime": "audio/mp4",
+      "content_type": "audio/mp4; codecs=\"mp4a.40.2\"",
+      "kind": "audio",
+      "sha256": "2cea14484d2e1c48f3f112e6b7c4ac78ad7254d4f2eb53e279798ca6e72c0800",
+      "bitrate": 96791
+    },
+    {
+      "id": "opus",
+      "filename": "opus.webm",
+      "mime": "audio/webm",
+      "content_type": "audio/webm; codecs=\"opus\"",
+      "kind": "audio",
+      "sha256": "95d9761219cdf44e35a0e2d905749ac85833d9c1a3442e986784631acfcc05ca",
+      "bitrate": 142071
+    }
+  ]
+}

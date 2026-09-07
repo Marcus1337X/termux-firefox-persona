@@ -308,5 +308,44 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(result["worker_contexts"]["service"], "notapplicable")
 
 
+class MediaProbeCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_trusted_input_still_cleans_media_resources(self):
+        class Client:
+            def __init__(self):
+                self.cleaned = False
+
+            async def evaluate(self, context, expression, **kwargs):
+                if "__tbpMediaCleanup" in expression:
+                    self.cleaned = True
+                    return True
+                return {"ready": True, "target": "#media"}
+
+        async def click(target):
+            raise RuntimeError("input unavailable")
+
+        client = Client()
+        with patch("src.persona.media.media_setup_expression", return_value="setup"):
+            result = await ProbeRunner(client)._run_media_probe("context", click)
+        self.assertTrue(client.cleaned)
+        self.assertIn("input unavailable", result["error"])
+
+    async def test_cleanup_error_cannot_disappear_from_completed_report(self):
+        class Client:
+            async def evaluate(self, context, expression, **kwargs):
+                if "__tbpMediaCleanup" in expression:
+                    raise RuntimeError("cleanup unavailable")
+                if expression == "setup":
+                    return {"ready": True, "target": "#media"}
+                return {"done": True, "codecs": {}}
+
+        async def click(target):
+            return True
+
+        with patch("src.persona.media.media_setup_expression", return_value="setup"):
+            result = await ProbeRunner(Client())._run_media_probe("context", click)
+        self.assertTrue(result["done"])
+        self.assertIn("cleanup unavailable", result["cleanupError"])
+
+
 if __name__ == "__main__":
     unittest.main()

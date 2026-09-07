@@ -10,9 +10,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
@@ -422,6 +424,58 @@ __TBP_WEBGL_SOURCE__
 </script>'''.replace('__TBP_WEBGL_SOURCE__', WEBGL_PROBE_SOURCE)
 
 
+_MEDIA_DIRECTORY = Path(__file__).parent / "assets" / "media"
+
+
+def _media_resources() -> dict[str, tuple[bytes, str]]:
+    """Load only bundled manifest entries; malformed/missing assets stay unavailable."""
+    try:
+        directory = _MEDIA_DIRECTORY.resolve()
+        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+        return {}
+    fixtures = manifest.get("fixtures")
+    if not isinstance(fixtures, list):
+        return {}
+    resources = {}
+    for fixture in fixtures:
+        if not isinstance(fixture, dict):
+            continue
+        filename, mime = fixture.get("filename"), fixture.get("mime")
+        if not isinstance(filename, str) or not re.fullmatch(r"[A-Za-z0-9_-]+\.[A-Za-z0-9]+", filename):
+            continue
+        if not isinstance(mime, str) or not re.fullmatch(r"[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+", mime):
+            continue
+        path = directory / filename
+        try:
+            if path.is_symlink() or path.resolve().parent != directory or not path.is_file():
+                continue
+            resources["/__tbp_media/" + filename] = (path.read_bytes(), mime)
+        except OSError:
+            continue
+    return resources
+
+
+def _media_range(header: str, size: int) -> tuple[int, int]:
+    """Resolve one byte range, rejecting malformed or unsatisfiable requests."""
+    match = re.fullmatch(r"bytes=([0-9]*)-([0-9]*)", header.strip())
+    if not match or size == 0:
+        raise ValueError("invalid byte range")
+    first, last = match.groups()
+    if first:
+        start = int(first)
+        end = min(int(last), size - 1) if last else size - 1
+        if start >= size or start > end:
+            raise ValueError("unsatisfiable byte range")
+    elif last and int(last) > 0:
+        start, end = max(0, size - int(last)), size - 1
+    else:
+        raise ValueError("invalid suffix range")
+    return start, end
+
+
 class _ProbeState:
     def __init__(self, worker_source: str | None = None) -> None:
         self.lock = threading.Lock()
@@ -429,6 +483,7 @@ class _ProbeState:
         self.worker_headers: list[dict[str, Any]] = []
         self.requests: list[dict[str, Any]] = []
         self.worker_source = worker_source
+        self.media_resources = _media_resources()
 
     def record(self, path: str, headers: Mapping[str, str]) -> None:
         clean = {str(k): str(v) for k, v in headers.items()}
@@ -479,9 +534,46 @@ def _handler_for(state: _ProbeState):
         def log_message(self, *_args: Any) -> None:
             return
 
+        def _serve_media(self, path: str) -> None:
+            resource = state.media_resources.get(path)
+            if resource is None:
+                self.send_error(404)
+                return
+            body, content_type = resource
+            size = len(body)
+            ranges = self.headers.get_all("Range", [])
+            content_range = None
+            if ranges:
+                try:
+                    if len(ranges) != 1:
+                        raise ValueError("multiple ranges")
+                    start, end = _media_range(ranges[0], size)
+                except ValueError:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return
+                content_range = f"bytes {start}-{end}/{size}"
+                body = body[start:end + 1]
+            self.send_response(206 if content_range else 200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "no-store")
+            if content_range:
+                self.send_header("Content-Range", content_range)
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self) -> None:  # noqa: N802 (stdlib handler API)
             state.record(self.path, self.headers)
             path = urlsplit(self.path).path
+            if path.startswith("/__tbp_media/"):
+                self._serve_media(path)
+                return
             if path in {"/", "/probe.html"}:
                 body, content_type = PROBE_HTML.encode(), "text/html; charset=utf-8"
             elif path == "/__tbp_dedicated_worker.js":
@@ -600,6 +692,7 @@ class ProbeRunner:
         font_config: Mapping[str, Any] | None = None,
         worker_graphics: bool = False,
         audio_config: Mapping[str, Any] | None = None,
+        media_config: Mapping[str, Any] | None = None,
         trusted_click: Any = None,
     ) -> dict[str, Any]:
         wait_timeout = self.timeout if timeout is None else float(timeout)
@@ -628,6 +721,9 @@ class ProbeRunner:
                 page = dict(page)
                 page["audio_behavior"] = await self._run_audio_probe(
                     context, audio_config, trusted_click, wait_timeout)
+            if media_config is not None:
+                page = dict(page)
+                page["media_behavior"] = await self._run_media_probe(context, trusted_click)
             http = server.snapshot()
             observations = {"http": http, "page": page,
                             "workers": page.get("workers", {}) if isinstance(page, Mapping) else {}}
@@ -745,6 +841,37 @@ class ProbeRunner:
                     result["restore_error"] = str(exc)
             else:
                 result["restore_error"] = "original permission state was not known"
+        return result
+
+    async def _run_media_probe(self, context: str, trusted_click: Any) -> dict[str, Any]:
+        from .media import media_setup_expression
+        result: dict[str, Any] = {}
+        try:
+            ready = await self.client.evaluate(context, media_setup_expression(), timeout=10)
+            if not isinstance(ready, Mapping) or not ready.get("ready"):
+                result = {"error": "Media probe setup did not complete"}
+            elif trusted_click is None:
+                result = {"error": "Trusted input callback unavailable"}
+            else:
+                await trusted_click(ready["target"])
+                deadline = asyncio.get_running_loop().time() + 60
+                while asyncio.get_running_loop().time() < deadline:
+                    observed = await self.client.evaluate(context, "window.__tbpMedia", timeout=5)
+                    if isinstance(observed, Mapping):
+                        result = dict(observed)
+                        if result.get("done"):
+                            break
+                    await asyncio.sleep(0.2)
+                else:
+                    result["error"] = "Media probe completion timeout"
+        except Exception as exc:
+            result["error"] = str(exc)
+        finally:
+            try:
+                await self.client.evaluate(context,
+                    "window.__tbpMediaCleanup ? window.__tbpMediaCleanup() : true", timeout=8)
+            except Exception as exc:
+                result["cleanupError"] = str(exc)
         return result
 
     async def _run_audio_probe(self, context: str, config: Mapping[str, Any],

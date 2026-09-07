@@ -27,7 +27,8 @@ forcedColors:matchMedia('(forced-colors: active)').matches}})"""
 FONT_TEMPLATE = "linux-firefox-fonts-glx-v1"
 WORKER_TEMPLATE = "linux-firefox-workers-glx-v1"
 AUDIO_TEMPLATE = "linux-firefox-audio-glx-v1"
-FONT_TEMPLATES = {FONT_TEMPLATE, WORKER_TEMPLATE, AUDIO_TEMPLATE}
+MEDIA_TEMPLATE = "linux-firefox-media-glx-v1"
+FONT_TEMPLATES = {FONT_TEMPLATE, WORKER_TEMPLATE, AUDIO_TEMPLATE, MEDIA_TEMPLATE}
 
 
 def create_pair(manager, template):
@@ -64,6 +65,11 @@ def font_window_expression(personas):
     Full probe creates Worker realms and is only run with one live Persona.
     This check needs no new tabs, worker processes or temporary font CSS.
     """
+    media_fixtures = []
+    if all("media" in persona.final_config for persona in personas):
+        from src.persona.media import media_manifest
+        media_fixtures = [{key: fixture[key] for key in ("id", "kind", "content_type")}
+                          for fixture in media_manifest()["fixtures"]]
     names = {"__TBP_ACCEPTANCE_MISSING_FONT__"}
     local_names = {}
     for persona in personas:
@@ -101,12 +107,19 @@ def font_window_expression(personas):
         finally { await context.close(); }
         audio.closedState = context.state;
       }
-      return {...(__CHECK_AUDIO__ ? {audio} : {}), local, serif: {sample, hash: (hash >>> 0).toString(16).padStart(8, '0'), inkPixels,
+      const mediaFixtures = __MEDIA_FIXTURES__;
+      const media = {};
+      for (const fixture of mediaFixtures) {
+        const element = document.createElement(fixture.kind);
+        media[fixture.id] = element.canPlayType(fixture.content_type);
+      }
+      return {...(mediaFixtures.length ? {media} : {}), ...(__CHECK_AUDIO__ ? {audio} : {}), local, serif: {sample, hash: (hash >>> 0).toString(16).padStart(8, '0'), inkPixels,
         metrics: {width:m.width, ascent:m.actualBoundingBoxAscent, descent:m.actualBoundingBoxDescent,
                   left:m.actualBoundingBoxLeft, right:m.actualBoundingBoxRight}}};
     })()""".replace("__FAMILY_NAMES__", json.dumps(sorted(names), ensure_ascii=False)).replace(
         "__LOCAL_NAMES__", json.dumps(local_names, ensure_ascii=False)).replace(
-        "__CHECK_AUDIO__", json.dumps(all("audio" in persona.final_config for persona in personas)))
+        "__CHECK_AUDIO__", json.dumps(all("audio" in persona.final_config for persona in personas))).replace(
+        "__MEDIA_FIXTURES__", json.dumps(media_fixtures))
 
 
 def check_font_window(persona, observed):
@@ -119,6 +132,9 @@ def check_font_window(persona, observed):
     if "audio" in persona.final_config:
         assert observed["audio"]["sampleRate"] == persona.final_config["audio"]["sample_rate"]
         assert observed["audio"]["closedState"] == "closed"
+    if "media" in persona.final_config:
+        assert set(observed["media"]) == set(persona.final_config["media"]["codecs"])
+        assert all(value in ("maybe", "probably") for value in observed["media"].values())
 
 
 def stable_font_evidence(fonts):
@@ -179,12 +195,31 @@ def stable_audio_evidence(audio):
     }
 
 
+def stable_media_evidence(media):
+    """Keep decoded content and stable playback structure, excluding realtime phase/timing."""
+    codecs = {}
+    for name, observed in media["codecs"].items():
+        value = {key: observed[key] for key in ("kind", "contentType", "sha256", "canPlayType", "ended")}
+        value["decodingInfo"] = {"supported": observed["decodingInfo"]["supported"]}
+        if observed["kind"] == "video":
+            value.update({key: observed[key] for key in ("width", "height", "red", "green")})
+        else:
+            value["decoded"] = {key: observed["decoded"][key]
+                                for key in ("sampleRate", "channels", "length", "signal")}
+            value["playback"] = {key: observed["playback"][key]
+                                 for key in ("sampleRate", "fftSize", "peakBin")}
+        codecs[name] = value
+    return {"codecs": codecs, **{key: media[key] for key in (
+        "fixtureSet", "sampleRate", "runningState", "closedState", "trusted", "done")}}
+
+
 async def main(template=None):
     manager = PersonaManager()
     a, b = create_pair(manager, template)
     font_mode = template in FONT_TEMPLATES
-    worker_mode = template in {WORKER_TEMPLATE, AUDIO_TEMPLATE}
-    audio_mode = template == AUDIO_TEMPLATE
+    worker_mode = template in {WORKER_TEMPLATE, AUDIO_TEMPLATE, MEDIA_TEMPLATE}
+    audio_mode = template in {AUDIO_TEMPLATE, MEDIA_TEMPLATE}
+    media_mode = template == MEDIA_TEMPLATE
     font_expression = font_window_expression((a, b)) if font_mode else None
     async def serve(reader, writer):
         try:
@@ -226,6 +261,10 @@ async def main(template=None):
             audio = report["observations"]["page"]["audio_behavior"]
             results.setdefault("audio", {})[label] = audio
             evidence["audio"] = stable_audio_evidence(audio)
+        if media_mode:
+            media = report["observations"]["page"]["media_behavior"]
+            results.setdefault("media", {})[label] = media
+            evidence["media"] = stable_media_evidence(media)
         return evidence
 
     def passed(name):
@@ -254,6 +293,8 @@ async def main(template=None):
             passed("A font positive/negative, Canvas exports and TextMetrics")
             if worker_mode:
                 passed("A Dedicated/Shared/Service Worker fonts and WebGL")
+            if media_mode:
+                passed("A six-codec native decode/playback and MediaCapabilities")
             # Firefox retains content processes after the full multi-realm
             # probe. Restart this same profile before the dual-instance test
             # so its probe-only processes do not consume the second slot.
@@ -311,6 +352,11 @@ async def main(template=None):
                 results.setdefault("audio", {})["dual_default_sample_rates"] = {
                     "a": font_a["audio"], "b": font_b["audio"]}
                 passed("dual native AudioContext default sample rates differ")
+            if media_mode:
+                assert font_a["media"] == font_b["media"]
+                results.setdefault("media", {})["dual_can_play_type"] = {
+                    "a": font_a["media"], "b": font_b["media"]}
+                passed("dual six-codec canPlayType remains available without decoding")
             results["fonts"]["b_window_dual"] = font_b
             passed("dual font whitelists, same-sample Canvas and TextMetrics differ")
         assert manager.status(ids[0])["display"] != manager.status(ids[1])["display"]
@@ -334,6 +380,8 @@ async def main(template=None):
             passed("B font probe remains valid after A stops")
             if worker_mode:
                 passed("B Worker fonts and WebGL remain valid after A stops")
+            if media_mode:
+                passed("B six-codec native decode/playback remains valid after A stops")
         await manager.stop(ids[1])
         passed("stopping A leaves B intact")
         await manager.start(ids[0])
@@ -351,6 +399,8 @@ async def main(template=None):
             passed("restart preserves font visibility, Canvas pixels/exports and TextMetrics")
             if worker_mode:
                 passed("restart preserves three Worker font and WebGL evidence")
+            if media_mode:
+                passed("restart preserves six-codec decoded pixels/audio and stable playback evidence")
         if "geolocation" in a.final_config:
             if not font_mode:
                 assert (await manager.qualify(ids[0])).passed

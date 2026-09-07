@@ -142,7 +142,7 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
         fail("accept_language sequence must match languages")
 
     fonts = config.get("fonts")
-    if template_id in {"linux-firefox-fonts-glx-v1", "linux-firefox-workers-glx-v1", "linux-firefox-audio-glx-v1"} and fonts is None:
+    if template_id in {"linux-firefox-fonts-glx-v1", "linux-firefox-workers-glx-v1", "linux-firefox-audio-glx-v1", "linux-firefox-media-glx-v1"} and fonts is None:
         fail("font preset requires fonts")
     if fonts is not None:
         if not isinstance(fonts, Mapping) or fonts.get("policy") != "whitelist":
@@ -196,7 +196,7 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
             fail("geolocation.permission is invalid")
     # Region relationships belong to this finite preset family, not to every
     # multilingual desktop. Other families can define different relationships.
-    if template_id in {"linux-firefox-region-appearance-v1", "linux-firefox-software-glx-v1", "linux-firefox-fonts-glx-v1", "linux-firefox-workers-glx-v1", "linux-firefox-audio-glx-v1"}:
+    if template_id in {"linux-firefox-region-appearance-v1", "linux-firefox-software-glx-v1", "linux-firefox-fonts-glx-v1", "linux-firefox-workers-glx-v1", "linux-firefox-audio-glx-v1", "linux-firefox-media-glx-v1"}:
         regions = {"zh-CN": ("Asia/Shanghai", 31.2304, 121.4737),
                    "en-US": ("America/New_York", 40.7128, -74.0060)}
         expected = regions.get(locale["locale"])
@@ -205,7 +205,7 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
             fail("geolocation and timezone must match this preset's locale region")
         if "contrast" not in appearance:
             fail("regional appearance requires an explicit contrast preference")
-    if template_id in {"linux-firefox-software-glx-v1", "linux-firefox-fonts-glx-v1", "linux-firefox-workers-glx-v1", "linux-firefox-audio-glx-v1"}:
+    if template_id in {"linux-firefox-software-glx-v1", "linux-firefox-fonts-glx-v1", "linux-firefox-workers-glx-v1", "linux-firefox-audio-glx-v1", "linux-firefox-media-glx-v1"}:
         graphics = config.get("graphics")
         expected_graphics = {
             "identity_class": "native-linux-firefox", "hardware_class": "software",
@@ -217,7 +217,7 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
                        for name, value in expected_graphics.items())):
             fail("software GLX graphics must match the measured Mesa software identity")
     worker_graphics = config.get("worker_graphics")
-    if template_id in {"linux-firefox-workers-glx-v1", "linux-firefox-audio-glx-v1"} and worker_graphics is None:
+    if template_id in {"linux-firefox-workers-glx-v1", "linux-firefox-audio-glx-v1", "linux-firefox-media-glx-v1"} and worker_graphics is None:
         fail("Worker graphics preset requires worker_graphics")
     if worker_graphics is not None:
         if (not isinstance(worker_graphics, Mapping)
@@ -227,7 +227,7 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
                 or worker_graphics.get("webgl") is not True):
             fail("worker_graphics must require fonts and WebGL in dedicated, shared and service contexts")
     audio = config.get("audio")
-    if template_id == "linux-firefox-audio-glx-v1" and audio is None:
+    if template_id in {"linux-firefox-audio-glx-v1", "linux-firefox-media-glx-v1"} and audio is None:
         fail("audio preset requires audio")
     if audio is not None:
         if not isinstance(appearance, Mapping) or appearance.get("color_scheme") not in {"light", "dark"}:
@@ -243,6 +243,22 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
                 or any(type(audio.get(name)) is not type(value) or audio.get(name) != value
                        for name, value in expected_audio.items())):
             fail("audio must match the finite native preset and leave physical input/output unverified")
+
+
+    media = config.get("media")
+    if template_id == "linux-firefox-media-glx-v1" and media is None:
+        fail("media preset requires media")
+    if media is not None:
+        expected_media = {
+            "fixture_set": "native-codecs-v1",
+            "codecs": ["h264", "vp8", "vp9", "av1", "aac", "opus"],
+            "scope": "native-decode-playback", "physical_input": "not_verified",
+            "physical_output": "not_verified", "webrtc": "not_verified",
+        }
+        if (not isinstance(media, Mapping) or set(media) != set(expected_media)
+                or any(type(media.get(name)) is not type(value) or media.get(name) != value
+                       for name, value in expected_media.items())):
+            fail("media must match the finite native fixture preset without physical device or WebRTC claims")
 
 
 def _matches_template(template: "PersonaTemplate", config: Mapping[str, Any],

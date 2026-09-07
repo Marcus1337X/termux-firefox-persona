@@ -26,6 +26,8 @@ _AUDIO_ENVIRONMENT_VARS = (
     "AUDIODRIVER", "SDL_AUDIODRIVER",
 )
 
+_LOADER_ENVIRONMENT_VARS = ("LD_LIBRARY_PATH", "LD_PRELOAD")
+
 
 def _file_hashes(paths: list[Path]) -> list[list[str]]:
     """Return deterministic hashes while tolerating files removed mid-scan."""
@@ -41,6 +43,63 @@ def _file_hashes(paths: list[Path]) -> list[list[str]]:
             # old fingerprint; collection itself must remain non-fatal.
             continue
     return result
+
+
+def _ordered_regular_file_hashes(paths: list[Path]) -> list[list[str]]:
+    """Hash existing ordinary files in caller-supplied order.
+
+    Loader search order is part of the observed runtime state. ``is_file``
+    follows a symlink only when its target is an ordinary file; directories,
+    devices and FIFOs are therefore excluded without traversing any tree.
+    """
+
+    result: list[list[str]] = []
+    seen: set[Path] = set()
+    for path in paths:
+        try:
+            if path in seen or not path.is_file():
+                continue
+            seen.add(path)
+            result.append([str(path), hashlib.sha256(path.read_bytes()).hexdigest()])
+        except OSError:
+            continue
+    return result
+
+
+def loader_environment(
+    prefix: Path | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Record dynamic-loader inputs that can affect native media libraries.
+
+    This is a partial observation of loader state, not a complete ELF
+    dependency resolution. It records both raw variable strings and hashes of
+    existing ordinary files referenced by ``LD_PRELOAD``. For
+    ``libc++_shared.so`` it records candidates in ``LD_LIBRARY_PATH`` order,
+    followed by the prefix library.
+    """
+
+    prefix = prefix or Path(os.environ.get("PREFIX", "/usr"))
+    source_env = os.environ if environ is None else environ
+    library_path = str(source_env.get("LD_LIBRARY_PATH", ""))
+    preload = str(source_env.get("LD_PRELOAD", ""))
+
+    cxx_candidates: list[Path] = []
+    for directory in library_path.split(os.pathsep):
+        if directory:
+            cxx_candidates.append(Path(directory) / "libc++_shared.so")
+    cxx_candidates.append(prefix / "lib/libc++_shared.so")
+
+    preload_candidates = [Path(value) for value in re.split(r"[\s:]+", preload) if value]
+    return {
+        "environment": {
+            name: str(source_env.get(name, ""))
+            for name in _LOADER_ENVIRONMENT_VARS
+        },
+        "libcxx_shared": _ordered_regular_file_hashes(cxx_candidates),
+        "preload_files": _ordered_regular_file_hashes(preload_candidates),
+    }
 
 
 def _pactl_info(environ: Mapping[str, str] | None = None) -> dict[str, object]:
@@ -175,13 +234,14 @@ def snapshot(backend: str = "software") -> dict:
     packages = _output(["dpkg-query", "-W", "-f=${Package}=${Version}\n"])
     relevant = ("firefox", "mesa", "virgl", "font", "freetype", "harfbuzz",
                 "xorg-server", "openbox", "pulseaudio", "pipewire", "libcubeb",
-                "libasound", "alsa", "ffmpeg")
+                "libasound", "alsa", "ffmpeg", "libvpx", "libaom", "dav1d",
+                "opus", "x264", "x265", "fdk-aac", "libc++", "libplacebo")
     packages = sorted(line for line in packages.splitlines()
                       if any(word in line.lower() for word in relevant))
     prefix = Path(os.environ.get("PREFIX", "/usr"))
     fonts = font_environment(prefix, Path(firefox))
     facts = {
-        "schema_version": 3,
+        "schema_version": 4,
         "runtime_policy_version": 2,
         "firefox_version": match.group(1),
         "platform": platform.system(),
@@ -190,6 +250,7 @@ def snapshot(backend: str = "software") -> dict:
         "packages": packages,
         "fonts": fonts,
         "audio_environment": audio_environment(prefix=prefix),
+        "loader_environment": loader_environment(prefix=prefix),
         "graphics_environment": {name: os.environ.get(name) for name in (
             "GALLIUM_DRIVER", "MESA_LOADER_DRIVER_OVERRIDE", "LIBGL_DRIVERS_PATH",
             "LIBGL_ALWAYS_SOFTWARE", "MESA_GL_VERSION_OVERRIDE",

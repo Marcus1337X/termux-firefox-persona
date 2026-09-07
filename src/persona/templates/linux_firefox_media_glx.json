@@ -1,0 +1,460 @@
+{
+  "schema_version": 1,
+  "templates": [
+    {
+      "schema_version": 1,
+      "id": "linux-firefox-media-glx-v1",
+      "version": "1.0.0",
+      "status": "candidate",
+      "strict_eligible": false,
+      "metadata": {
+        "phase": 2,
+        "description": "Candidate native codec decode/playback with inherited Web Audio, fonts and software GLX",
+        "identity_source": "local_firefox_probe",
+        "execution_backend": "software",
+        "hardware_class": "software",
+        "verification_required": "current_environment_and_full_combination",
+        "context_backend": "glx",
+        "verification_scope": "Window and Dedicated/Shared/Service Worker font and basic shader/framebuffer behavior; native offline/realtime Web Audio rendering and trusted-input lifecycle; six fixed media fixtures require MediaCapabilities supported and native decode/playback",
+        "limitations": [
+          "Not an integrated GPU identity template",
+          "Does not complete second-batch graphics qualification",
+          "All requested Worker contexts require separate current-device evidence",
+          "No claim of full extension, precision, texture or limits coverage",
+          "Physical speaker output and microphone input are not verified",
+          "Limited fixture profiles only: 64x64 video at 8 fps for 2 seconds; no claim of other profiles, resolutions, encoding, WebRTC or media devices"
+        ],
+        "font_scope": "Window and Worker local font visibility, generic aliases, Canvas/OffscreenCanvas pixels and TextMetrics",
+        "audio_scope": "Native Web Audio sample processing and context lifecycle; no physical speaker or microphone verification",
+        "media_scope": "Native decode/playback of the native-codecs-v1 fixtures only; no physical input/output verification"
+      },
+      "base_config": {
+        "browser": {
+          "family": "firefox",
+          "platform": "Linux x86_64",
+          "oscpu": "Linux x86_64",
+          "app_version": "5.0 (X11)",
+          "firefox_version": "runtime",
+          "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:{firefox_version_major}.0) Gecko/20100101 Firefox/{firefox_version_major}.0"
+        },
+        "graphics": {
+          "identity_class": "native-linux-firefox",
+          "hardware_class": "software",
+          "execution_backend": "software",
+          "context_backend": "glx",
+          "vendor": "Mesa",
+          "renderer": "llvmpipe, or similar",
+          "webgl1": true,
+          "webgl2": true
+        },
+        "input": {
+          "pointer": "fine",
+          "hover": true,
+          "max_touch_points": 0
+        },
+        "appearance": {
+          "color_scheme": "light",
+          "reduced_motion": false,
+          "forced_colors": false
+        },
+        "worker_graphics": {
+          "contexts": [
+            "dedicated",
+            "shared",
+            "service"
+          ],
+          "fonts": true,
+          "webgl": true
+        },
+        "media": {
+          "fixture_set": "native-codecs-v1",
+          "codecs": [
+            "h264",
+            "vp8",
+            "vp9",
+            "av1",
+            "aac",
+            "opus"
+          ],
+          "scope": "native-decode-playback",
+          "physical_input": "not_verified",
+          "physical_output": "not_verified",
+          "webrtc": "not_verified"
+        }
+      },
+      "required_capabilities": [
+        "browser_identity",
+        "cpu_window_worker",
+        "display_window",
+        "locale_window_worker_http",
+        "geolocation_window",
+        "appearance_window",
+        "webgl_window",
+        "fonts_window",
+        "fonts_workers",
+        "webgl_workers",
+        "audio_offline",
+        "audio_realtime",
+        "media_codecs_window"
+      ],
+      "variants": [
+        {
+          "variant_id": "zh-cn-light-1280x800-c2",
+          "cpu": {
+            "hardware_concurrency": 2
+          },
+          "display": {
+            "window_policy": "maximized",
+            "viewport_policy": "derived",
+            "screen_width": 1280,
+            "screen_height": 800,
+            "avail_width": 1280,
+            "avail_height": 800,
+            "device_pixel_ratio": 1,
+            "color_depth": 24,
+            "pixel_depth": 24,
+            "orientation": "landscape"
+          },
+          "locale": {
+            "locale": "zh-CN",
+            "languages": [
+              "zh-CN",
+              "zh",
+              "en-US",
+              "en"
+            ],
+            "accept_language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            "timezone": "Asia/Shanghai"
+          },
+          "geolocation": {
+            "latitude": 31.2304,
+            "longitude": 121.4737,
+            "accuracy": 50,
+            "permission": "prompt"
+          },
+          "appearance": {
+            "color_scheme": "light",
+            "reduced_motion": false,
+            "contrast": "no-preference",
+            "forced_colors": false
+          },
+          "fonts": {
+            "policy": "whitelist",
+            "families": [
+              "DejaVu Sans",
+              "DejaVu Serif",
+              "DejaVu Sans Mono",
+              "Noto Sans CJK SC",
+              "Noto Color Emoji"
+            ],
+            "aliases": {
+              "sans-serif": "DejaVu Sans",
+              "serif": "DejaVu Serif",
+              "monospace": "DejaVu Sans Mono",
+              "emoji": "Noto Color Emoji",
+              "cjk": "Noto Sans CJK SC"
+            },
+            "samples": {
+              "DejaVu Sans": "Hamburgefontsiv AVMW 0123456789",
+              "DejaVu Serif": "Hamburgefontsiv AVMW 0123456789",
+              "DejaVu Sans Mono": "Hamburgefontsiv AVMW 0123456789",
+              "Noto Sans CJK SC": "汉字中文测试天地玄黄",
+              "Noto Color Emoji": "😀🌍🚀"
+            },
+            "blocked_families": [
+              "Roboto",
+              "Source Sans Pro",
+              "Noto Serif CJK SC",
+              "Noto Sans CJK JP",
+              "Noto Sans CJK TC",
+              "Noto Sans CJK KR",
+              "Noto Sans CJK HK",
+              "Twemoji Mozilla"
+            ],
+            "local_names": {
+              "Noto Sans CJK SC": "Noto Sans CJK SC Regular",
+              "Noto Sans CJK JP": "Noto Sans CJK JP Regular",
+              "Noto Sans CJK TC": "Noto Sans CJK TC Regular",
+              "Noto Sans CJK KR": "Noto Sans CJK KR Regular",
+              "Noto Sans CJK HK": "Noto Sans CJK HK Regular"
+            }
+          },
+          "audio": {
+            "sample_rate": 44100,
+            "channels": 2,
+            "frames": 2048,
+            "rendering": "native",
+            "physical_output": "not_verified",
+            "physical_input": "not_verified"
+          }
+        },
+        {
+          "variant_id": "zh-cn-dark-1366x768-c4",
+          "cpu": {
+            "hardware_concurrency": 4
+          },
+          "display": {
+            "window_policy": "maximized",
+            "viewport_policy": "derived",
+            "screen_width": 1366,
+            "screen_height": 768,
+            "avail_width": 1366,
+            "avail_height": 768,
+            "device_pixel_ratio": 1,
+            "color_depth": 24,
+            "pixel_depth": 24,
+            "orientation": "landscape"
+          },
+          "locale": {
+            "locale": "zh-CN",
+            "languages": [
+              "zh-CN",
+              "zh",
+              "en-US",
+              "en"
+            ],
+            "accept_language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            "timezone": "Asia/Shanghai"
+          },
+          "geolocation": {
+            "latitude": 31.2304,
+            "longitude": 121.4737,
+            "accuracy": 50,
+            "permission": "prompt"
+          },
+          "appearance": {
+            "color_scheme": "dark",
+            "reduced_motion": true,
+            "contrast": "no-preference",
+            "forced_colors": false
+          },
+          "fonts": {
+            "policy": "whitelist",
+            "families": [
+              "DejaVu Sans",
+              "Noto Serif CJK SC",
+              "DejaVu Sans Mono",
+              "Noto Sans CJK SC",
+              "Noto Color Emoji"
+            ],
+            "aliases": {
+              "sans-serif": "DejaVu Sans",
+              "serif": "Noto Serif CJK SC",
+              "monospace": "DejaVu Sans Mono",
+              "emoji": "Noto Color Emoji",
+              "cjk": "Noto Sans CJK SC"
+            },
+            "samples": {
+              "DejaVu Sans": "Hamburgefontsiv AVMW 0123456789",
+              "Noto Serif CJK SC": "汉字中文测试天地玄黄",
+              "DejaVu Sans Mono": "Hamburgefontsiv AVMW 0123456789",
+              "Noto Sans CJK SC": "汉字中文测试天地玄黄",
+              "Noto Color Emoji": "😀🌍🚀"
+            },
+            "blocked_families": [
+              "Roboto",
+              "Source Sans Pro",
+              "DejaVu Serif",
+              "Noto Sans CJK JP",
+              "Noto Sans CJK TC",
+              "Noto Sans CJK KR",
+              "Noto Sans CJK HK",
+              "Twemoji Mozilla"
+            ],
+            "local_names": {
+              "Noto Sans CJK SC": "Noto Sans CJK SC Regular",
+              "Noto Sans CJK JP": "Noto Sans CJK JP Regular",
+              "Noto Sans CJK TC": "Noto Sans CJK TC Regular",
+              "Noto Sans CJK KR": "Noto Sans CJK KR Regular",
+              "Noto Sans CJK HK": "Noto Sans CJK HK Regular"
+            }
+          },
+          "audio": {
+            "sample_rate": 48000,
+            "channels": 2,
+            "frames": 2048,
+            "rendering": "native",
+            "physical_output": "not_verified",
+            "physical_input": "not_verified"
+          }
+        },
+        {
+          "variant_id": "en-us-light-1280x800-c2",
+          "cpu": {
+            "hardware_concurrency": 2
+          },
+          "display": {
+            "window_policy": "maximized",
+            "viewport_policy": "derived",
+            "screen_width": 1280,
+            "screen_height": 800,
+            "avail_width": 1280,
+            "avail_height": 800,
+            "device_pixel_ratio": 1,
+            "color_depth": 24,
+            "pixel_depth": 24,
+            "orientation": "landscape"
+          },
+          "locale": {
+            "locale": "en-US",
+            "languages": [
+              "en-US",
+              "en"
+            ],
+            "accept_language": "en-US,en;q=0.9",
+            "timezone": "America/New_York"
+          },
+          "geolocation": {
+            "latitude": 40.7128,
+            "longitude": -74.006,
+            "accuracy": 50,
+            "permission": "prompt"
+          },
+          "appearance": {
+            "color_scheme": "light",
+            "reduced_motion": false,
+            "contrast": "no-preference",
+            "forced_colors": false
+          },
+          "fonts": {
+            "policy": "whitelist",
+            "families": [
+              "DejaVu Sans",
+              "DejaVu Serif",
+              "DejaVu Sans Mono",
+              "Noto Sans CJK SC",
+              "Noto Color Emoji"
+            ],
+            "aliases": {
+              "sans-serif": "DejaVu Sans",
+              "serif": "DejaVu Serif",
+              "monospace": "DejaVu Sans Mono",
+              "emoji": "Noto Color Emoji",
+              "cjk": "Noto Sans CJK SC"
+            },
+            "samples": {
+              "DejaVu Sans": "Hamburgefontsiv AVMW 0123456789",
+              "DejaVu Serif": "Hamburgefontsiv AVMW 0123456789",
+              "DejaVu Sans Mono": "Hamburgefontsiv AVMW 0123456789",
+              "Noto Sans CJK SC": "汉字中文测试天地玄黄",
+              "Noto Color Emoji": "😀🌍🚀"
+            },
+            "blocked_families": [
+              "Roboto",
+              "Source Sans Pro",
+              "Noto Serif CJK SC",
+              "Noto Sans CJK JP",
+              "Noto Sans CJK TC",
+              "Noto Sans CJK KR",
+              "Noto Sans CJK HK",
+              "Twemoji Mozilla"
+            ],
+            "local_names": {
+              "Noto Sans CJK SC": "Noto Sans CJK SC Regular",
+              "Noto Sans CJK JP": "Noto Sans CJK JP Regular",
+              "Noto Sans CJK TC": "Noto Sans CJK TC Regular",
+              "Noto Sans CJK KR": "Noto Sans CJK KR Regular",
+              "Noto Sans CJK HK": "Noto Sans CJK HK Regular"
+            }
+          },
+          "audio": {
+            "sample_rate": 44100,
+            "channels": 2,
+            "frames": 2048,
+            "rendering": "native",
+            "physical_output": "not_verified",
+            "physical_input": "not_verified"
+          }
+        },
+        {
+          "variant_id": "en-us-dark-1366x768-c4",
+          "cpu": {
+            "hardware_concurrency": 4
+          },
+          "display": {
+            "window_policy": "maximized",
+            "viewport_policy": "derived",
+            "screen_width": 1366,
+            "screen_height": 768,
+            "avail_width": 1366,
+            "avail_height": 768,
+            "device_pixel_ratio": 1,
+            "color_depth": 24,
+            "pixel_depth": 24,
+            "orientation": "landscape"
+          },
+          "locale": {
+            "locale": "en-US",
+            "languages": [
+              "en-US",
+              "en"
+            ],
+            "accept_language": "en-US,en;q=0.9",
+            "timezone": "America/New_York"
+          },
+          "geolocation": {
+            "latitude": 40.7128,
+            "longitude": -74.006,
+            "accuracy": 50,
+            "permission": "prompt"
+          },
+          "appearance": {
+            "color_scheme": "dark",
+            "reduced_motion": true,
+            "contrast": "no-preference",
+            "forced_colors": false
+          },
+          "fonts": {
+            "policy": "whitelist",
+            "families": [
+              "DejaVu Sans",
+              "Noto Serif CJK SC",
+              "DejaVu Sans Mono",
+              "Noto Sans CJK SC",
+              "Noto Color Emoji"
+            ],
+            "aliases": {
+              "sans-serif": "DejaVu Sans",
+              "serif": "Noto Serif CJK SC",
+              "monospace": "DejaVu Sans Mono",
+              "emoji": "Noto Color Emoji",
+              "cjk": "Noto Sans CJK SC"
+            },
+            "samples": {
+              "DejaVu Sans": "Hamburgefontsiv AVMW 0123456789",
+              "Noto Serif CJK SC": "汉字中文测试天地玄黄",
+              "DejaVu Sans Mono": "Hamburgefontsiv AVMW 0123456789",
+              "Noto Sans CJK SC": "汉字中文测试天地玄黄",
+              "Noto Color Emoji": "😀🌍🚀"
+            },
+            "blocked_families": [
+              "Roboto",
+              "Source Sans Pro",
+              "DejaVu Serif",
+              "Noto Sans CJK JP",
+              "Noto Sans CJK TC",
+              "Noto Sans CJK KR",
+              "Noto Sans CJK HK",
+              "Twemoji Mozilla"
+            ],
+            "local_names": {
+              "Noto Sans CJK SC": "Noto Sans CJK SC Regular",
+              "Noto Sans CJK JP": "Noto Sans CJK JP Regular",
+              "Noto Sans CJK TC": "Noto Sans CJK TC Regular",
+              "Noto Sans CJK KR": "Noto Sans CJK KR Regular",
+              "Noto Sans CJK HK": "Noto Sans CJK HK Regular"
+            }
+          },
+          "audio": {
+            "sample_rate": 48000,
+            "channels": 2,
+            "frames": 2048,
+            "rendering": "native",
+            "physical_output": "not_verified",
+            "physical_input": "not_verified"
+          }
+        }
+      ]
+    }
+  ]
+}

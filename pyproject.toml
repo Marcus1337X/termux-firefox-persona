@@ -43,4 +43,4 @@ py-modules = ["cli"]
 include = ["src*"]
 
 [tool.setuptools.package-data]
-"src.persona" = ["templates/*.json", "*.json", "assets/*.js"]
+"src.persona" = ["templates/*.json", "*.json", "assets/*.js", "assets/media/*"]

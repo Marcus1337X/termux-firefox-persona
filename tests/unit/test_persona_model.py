@@ -529,5 +529,82 @@ class AudioTemplateTests(unittest.TestCase):
             Persona.from_mapping(data)
 
 
+class MediaTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.template = TemplateCatalog.default().get("linux-firefox-media-glx-v1")
+
+    def test_media_stays_candidate_and_requires_all_six_codecs_with_inherited_audio(self):
+        audio = TemplateCatalog.default().get("linux-firefox-audio-glx-v1")
+        self.assertEqual(self.template.status, "candidate")
+        self.assertFalse(self.template.strict_eligible)
+        self.assertEqual(self.template.version, "1.0.0")
+        self.assertEqual(len(self.template.variants), 4)
+        self.assertEqual(set(self.template.required_capabilities),
+                         set(audio.required_capabilities) | {"media_codecs_window"})
+        for index in range(4):
+            config = self.template.expand(index, "154.0.1")
+            self.assertEqual(config["media"], {
+                "fixture_set": "native-codecs-v1", "codecs": ["h264", "vp8", "vp9", "av1", "aac", "opus"],
+                "scope": "native-decode-playback", "physical_input": "not_verified",
+                "physical_output": "not_verified", "webrtc": "not_verified"})
+            old = audio.expand(index, "154.0.1")
+            for field in ("audio", "fonts", "worker_graphics", "graphics", "geolocation", "appearance"):
+                self.assertEqual(config[field], old[field])
+        snapshot = CapabilitySnapshot(environment={"firefox_version": "154.0.1"}, capabilities={})
+        with self.assertRaises(NoEligiblePersonaError):
+            PersonaGenerator(TemplateCatalog([self.template]), snapshot,
+                             runtime_browser_version="154.0.1").create(seed=1)
+
+    def test_media_rejects_missing_codecs_and_overstated_scope(self):
+        cases = [("fixture_set", "arbitrary"), ("codecs", ["h264"]),
+                 ("codecs", "h264,vp8,vp9,av1,aac,opus"), ("codecs", None),
+                 ("scope", "all-profiles"), ("physical_input", "verified"),
+                 ("physical_output", "verified"), ("webrtc", "supported"), ("encoding", True)]
+        for key, value in cases:
+            with self.subTest(key=key, value=value):
+                data = self.template.to_dict()
+                data["base_config"]["media"][key] = value
+                with self.assertRaisesRegex(TemplateError, "media"):
+                    PersonaTemplate.from_mapping(data)
+        for key in self.template.base_config["media"]:
+            with self.subTest(missing=key):
+                data = self.template.to_dict()
+                del data["base_config"]["media"][key]
+                with self.assertRaisesRegex(TemplateError, "media"):
+                    PersonaTemplate.from_mapping(data)
+
+    def test_media_keeps_required_audio_worker_fonts_region_and_glx_guards(self):
+        for field in ("audio", "fonts", "geolocation"):
+            with self.subTest(missing=field):
+                data = self.template.to_dict()
+                del data["variants"][0][field]
+                with self.assertRaises(TemplateError):
+                    PersonaTemplate.from_mapping(data)
+        for field in ("media", "worker_graphics"):
+            with self.subTest(missing=field):
+                data = self.template.to_dict()
+                del data["base_config"][field]
+                with self.assertRaisesRegex(TemplateError, "requires " + field):
+                    PersonaTemplate.from_mapping(data)
+        data = self.template.to_dict()
+        data["base_config"]["graphics"]["context_backend"] = "egl"
+        with self.assertRaisesRegex(TemplateError, "software GLX"):
+            PersonaTemplate.from_mapping(data)
+        data = self.template.to_dict()
+        data["variants"][0]["audio"]["sample_rate"] = 48000
+        with self.assertRaisesRegex(TemplateError, "audio"):
+            PersonaTemplate.from_mapping(data)
+
+    def test_persisted_media_identity_cannot_drop_inherited_or_media_policy(self):
+        persona = PersonaGenerator(TemplateCatalog([self.template]),
+                                   runtime_browser_version="154.0.1").create(seed=1, experimental=True)
+        for field in ("media", "audio", "fonts", "worker_graphics", "geolocation"):
+            with self.subTest(field=field):
+                data = persona.to_dict()
+                del data["final_config"][field]
+                with self.assertRaises(TemplateError):
+                    Persona.from_mapping(data)
+
+
 if __name__ == "__main__":
     unittest.main()

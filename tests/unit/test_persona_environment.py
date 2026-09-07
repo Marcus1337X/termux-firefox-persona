@@ -6,7 +6,7 @@ import unittest
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
-from src.persona.environment import audio_environment, font_environment
+from src.persona.environment import audio_environment, font_environment, loader_environment, snapshot
 
 
 class FontEnvironmentTests(unittest.TestCase):
@@ -96,6 +96,88 @@ Server String: /private/socket
             second = audio_environment(prefix, home=home, environ={})
         self.assertEqual(len(first["configuration"]), 1)
         self.assertNotEqual(first["configuration"], second["configuration"])
+
+
+class LoaderEnvironmentTests(unittest.TestCase):
+    def test_loader_records_variable_strings_and_ordered_library_hashes(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            prefix = root / "prefix"
+            first_dir, second_dir = root / "first", root / "second"
+            preload = root / "libtermux-exec-ld-preload.so"
+            for directory in (prefix / "lib", first_dir, second_dir):
+                directory.mkdir(parents=True)
+                (directory / "libc++_shared.so").write_bytes(str(directory).encode())
+            preload.write_bytes(b"preload")
+            environ = {
+                "LD_LIBRARY_PATH": os.pathsep.join((str(second_dir), str(first_dir))),
+                "LD_PRELOAD": str(preload),
+            }
+            result = loader_environment(prefix=prefix, environ=environ)
+        self.assertEqual(result["environment"], environ)
+        self.assertEqual(
+            [path for path, _ in result["libcxx_shared"]],
+            [str(second_dir / "libc++_shared.so"),
+             str(first_dir / "libc++_shared.so"),
+             str(prefix / "lib/libc++_shared.so")],
+        )
+        self.assertEqual(result["preload_files"][0][0], str(preload))
+        self.assertEqual(len(result["preload_files"][0][1]), 64)
+
+    def test_loader_library_content_and_path_changes_invalidate_facts(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            prefix = root / "prefix"
+            first_dir, second_dir = root / "first", root / "second"
+            for directory in (prefix / "lib", first_dir, second_dir):
+                directory.mkdir(parents=True)
+                (directory / "libc++_shared.so").write_bytes(b"same")
+            environment = {"LD_LIBRARY_PATH": str(first_dir), "LD_PRELOAD": ""}
+            first = loader_environment(prefix=prefix, environ=environment)
+            (first_dir / "libc++_shared.so").write_bytes(b"changed")
+            self.assertNotEqual(first, loader_environment(prefix=prefix, environ=environment))
+            environment["LD_LIBRARY_PATH"] = str(second_dir)
+            self.assertNotEqual(first, loader_environment(prefix=prefix, environ=environment))
+
+    def test_loader_follows_library_symlink_and_tracks_target_changes(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            prefix = root / "prefix"
+            library_dir = root / "library"
+            target = root / "libc++_shared.real.so"
+            (prefix / "lib").mkdir(parents=True)
+            library_dir.mkdir()
+            (prefix / "lib/libc++_shared.so").write_bytes(b"prefix")
+            target.write_bytes(b"initial")
+            candidate = library_dir / "libc++_shared.so"
+            candidate.symlink_to(target)
+            environment = {"LD_LIBRARY_PATH": str(library_dir), "LD_PRELOAD": ""}
+            first = loader_environment(prefix=prefix, environ=environment)
+            self.assertEqual(first["libcxx_shared"][0][0], str(candidate))
+            target.write_bytes(b"changed")
+            self.assertNotEqual(first, loader_environment(prefix=prefix, environ=environment))
+
+
+class CodecEnvironmentTests(unittest.TestCase):
+    def test_codec_and_cpp_runtime_updates_invalidate_qualification(self):
+        packages = ["firefox=142", "ffmpeg=8", "libc++=29", "libvpx=1", "libaom=3",
+                    "libdav1d=1", "opus=1", "x264=1", "libx265=1", "libfdk-aac=1",
+                    "libplacebo=7", "unrelated-editor=1"]
+        def output(command, **kwargs):
+            return "Mozilla Firefox 142.0" if "--version" in command else "\n".join(packages)
+        with patch("src.persona.environment.shutil.which", return_value="/usr/bin/firefox"), \
+             patch("src.persona.environment._output", side_effect=output), \
+             patch("src.persona.environment.font_environment", return_value={}), \
+             patch("src.persona.environment.audio_environment", return_value={}), \
+             patch("src.persona.environment.loader_environment", return_value={}):
+            original = snapshot()
+            self.assertEqual(original["schema_version"], 4)
+            self.assertNotIn("unrelated-editor=1", original["packages"])
+            for index in range(1, len(packages)-1):
+                old = packages[index]
+                packages[index] = old + ".updated"
+                self.assertNotEqual(original["id"], snapshot()["id"], old)
+                packages[index] = old
 
 
 if __name__ == "__main__":
