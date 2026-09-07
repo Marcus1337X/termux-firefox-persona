@@ -599,6 +599,8 @@ class ProbeRunner:
         geolocation: bool = False,
         font_config: Mapping[str, Any] | None = None,
         worker_graphics: bool = False,
+        audio_config: Mapping[str, Any] | None = None,
+        trusted_click: Any = None,
     ) -> dict[str, Any]:
         wait_timeout = self.timeout if timeout is None else float(timeout)
         worker_source = self._worker_probe_source(font_config) if worker_graphics else None
@@ -622,6 +624,10 @@ class ProbeRunner:
                 page["fonts"] = await self._run_font_probe(
                     context, font_config, wait_timeout
                 )
+            if audio_config is not None:
+                page = dict(page)
+                page["audio_behavior"] = await self._run_audio_probe(
+                    context, audio_config, trusted_click, wait_timeout)
             http = server.snapshot()
             observations = {"http": http, "page": page,
                             "workers": page.get("workers", {}) if isinstance(page, Mapping) else {}}
@@ -739,6 +745,41 @@ class ProbeRunner:
                     result["restore_error"] = str(exc)
             else:
                 result["restore_error"] = "original permission state was not known"
+        return result
+
+    async def _run_audio_probe(self, context: str, config: Mapping[str, Any],
+                               trusted_click: Any, timeout: float) -> dict[str, Any]:
+        from .audio import audio_probe_expression
+        from .audio_realtime import REALTIME_AUDIO_SETUP
+        result: dict[str, Any] = {"workers": "notapplicable",
+                                  "physical_input": "not_verified", "physical_output": "not_verified"}
+        try:
+            result["offline"] = await self.client.evaluate(
+                context, audio_probe_expression(config), timeout=timeout)
+        except Exception as exc:
+            result["offline"] = {"error": str(exc)}
+        try:
+            ready = await self.client.evaluate(context, REALTIME_AUDIO_SETUP, timeout=timeout)
+            if not isinstance(ready, Mapping) or not ready.get("ready"):
+                result["realtime"] = ready
+            elif trusted_click is None:
+                result["realtime"] = {"error": "Trusted input callback unavailable"}
+            else:
+                await trusted_click(ready["target"])
+                result["realtime"] = await self.client.evaluate(context, r'''(async()=>{
+                  const deadline = Date.now()+12000;
+                  while (window.__tbpRealtimeAudio && !window.__tbpRealtimeAudio.done && Date.now()<deadline)
+                    await new Promise(resolve=>setTimeout(resolve,50));
+                  return window.__tbpRealtimeAudio || {error:'Audio result unavailable'};
+                })()''', timeout=timeout)
+        except Exception as exc:
+            result["realtime"] = {"error": str(exc)}
+        finally:
+            try:
+                await self.client.evaluate(context,
+                    "window.__tbpAudioCleanup ? window.__tbpAudioCleanup() : true", timeout=5)
+            except Exception as exc:
+                result["cleanup_error"] = str(exc)
         return result
 
     @staticmethod

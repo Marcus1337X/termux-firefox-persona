@@ -466,5 +466,68 @@ class WorkerGraphicsTemplateTests(unittest.TestCase):
             Persona.from_mapping(data)
 
 
+class AudioTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.template = TemplateCatalog.default().get("linux-firefox-audio-glx-v1")
+
+    def test_audio_variants_bind_sample_rate_without_claiming_physical_devices(self):
+        self.assertEqual(self.template.status, "candidate")
+        self.assertEqual(self.template.version, "1.0.0")
+        self.assertEqual(len(self.template.variants), 4)
+        self.assertIn("audio_offline", self.template.required_capabilities)
+        self.assertIn("audio_realtime", self.template.required_capabilities)
+        self.assertEqual(len(self.template.required_capabilities), 12)
+        for index in range(4):
+            config = self.template.expand(index, "154.0.1")
+            self.assertEqual(config["audio"], {
+                "sample_rate": 44100 if config["appearance"]["color_scheme"] == "light" else 48000,
+                "channels": 2, "frames": 2048, "rendering": "native",
+                "physical_output": "not_verified", "physical_input": "not_verified"})
+        snapshot = CapabilitySnapshot(environment={"firefox_version": "154.0.1"}, capabilities={})
+        with self.assertRaises(NoEligiblePersonaError):
+            PersonaGenerator(TemplateCatalog([self.template]), snapshot,
+                             runtime_browser_version="154.0.1").create(seed=1)
+
+    def test_audio_rejects_unbounded_fields_and_physical_device_claims(self):
+        cases = [("sample_rate", 48000), ("sample_rate", True), ("sample_rate", float("nan")),
+                 ("sample_rate", float("inf")), ("channels", True), ("channels", 1),
+                 ("frames", 2048.0), ("frames", 4096), ("rendering", "spoofed"),
+                 ("physical_output", "verified"), ("physical_input", "microphone"), ("extra", 1)]
+        for key, value in cases:
+            with self.subTest(key=key, value=value):
+                data = self.template.to_dict()
+                data["variants"][0]["audio"][key] = value
+                with self.assertRaisesRegex(TemplateError, "audio"):
+                    PersonaTemplate.from_mapping(data)
+        data = self.template.to_dict()
+        del data["variants"][0]["audio"]["physical_input"]
+        with self.assertRaisesRegex(TemplateError, "audio"):
+            PersonaTemplate.from_mapping(data)
+
+    def test_audio_keeps_all_inherited_required_configuration(self):
+        for key in ("audio", "fonts", "geolocation"):
+            with self.subTest(key=key):
+                data = self.template.to_dict()
+                del data["variants"][0][key]
+                with self.assertRaises(TemplateError):
+                    PersonaTemplate.from_mapping(data)
+        data = self.template.to_dict()
+        del data["base_config"]["worker_graphics"]
+        with self.assertRaisesRegex(TemplateError, "requires worker_graphics"):
+            PersonaTemplate.from_mapping(data)
+        data = self.template.to_dict()
+        data["base_config"]["graphics"]["context_backend"] = "egl"
+        with self.assertRaisesRegex(TemplateError, "software GLX"):
+            PersonaTemplate.from_mapping(data)
+
+    def test_persisted_audio_identity_cannot_drop_audio_policy(self):
+        persona = PersonaGenerator(TemplateCatalog([self.template]),
+                                   runtime_browser_version="154.0.1").create(seed=1, experimental=True)
+        data = persona.to_dict()
+        del data["final_config"]["audio"]
+        with self.assertRaisesRegex(TemplateError, "requires audio"):
+            Persona.from_mapping(data)
+
+
 if __name__ == "__main__":
     unittest.main()

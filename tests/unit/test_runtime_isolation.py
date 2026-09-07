@@ -238,5 +238,74 @@ class NativeIsolationTests(unittest.TestCase):
         )
 
 
+class NativeClickTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from src.persona.runtime import PersonaRuntime
+        self.runtime = PersonaRuntime.__new__(PersonaRuntime)
+        self.runtime.context = "context-A"
+        self.runtime.state = {}
+        self.runtime.bidi = mock.Mock(send=mock.AsyncMock(), evaluate=mock.AsyncMock())
+        self.runtime.select_context = mock.AsyncMock(return_value="context-A")
+
+    async def test_css_target_uses_scrolled_center_and_releases_actions(self):
+        self.runtime.bidi.evaluate.return_value = {"x": 12.8, "y": 25.2}
+        result = await self.runtime.dispatch("click_native", {"target": '#button[data-label="ok"]'})
+        expression = self.runtime.bidi.evaluate.await_args.args[1]
+        self.assertIn("scrollIntoView", expression)
+        self.assertIn("getBoundingClientRect", expression)
+        self.assertEqual(result, {"method": "bidi", "x": 12, "y": 25, "button": "left",
+                                  "count": 1, "context": "context-A"})
+        self.runtime.bidi.send.assert_has_awaits([
+            mock.call("input.performActions", {"context": "context-A", "actions": [{
+                "type": "pointer", "id": "persona-native-mouse", "parameters": {"pointerType": "mouse"},
+                "actions": [{"type": "pointerMove", "origin": "viewport", "x": 12, "y": 25, "duration": 0},
+                            {"type": "pointerDown", "button": 0}, {"type": "pointerUp", "button": 0}]}]}),
+            mock.call("input.releaseActions", {"context": "context-A"}),
+        ])
+        self.runtime.select_context.assert_awaited_once()
+
+    async def test_explicit_coordinates_support_three_right_clicks(self):
+        await self.runtime._native_click({"x": 8, "y": 9, "button": "right", "count": 3})
+        self.runtime.bidi.evaluate.assert_not_awaited()
+        actions = self.runtime.bidi.send.await_args_list[0].args[1]["actions"][0]["actions"]
+        self.assertEqual(len(actions), 7)
+        self.assertEqual(actions[1:], [item for _ in range(3) for item in (
+            {"type": "pointerDown", "button": 2}, {"type": "pointerUp", "button": 2})])
+        self.assertEqual(self.runtime.bidi.send.await_args_list[-1],
+                         mock.call("input.releaseActions", {"context": "context-A"}))
+
+    async def test_failed_pointer_action_still_releases_pressed_buttons(self):
+        self.runtime.bidi.send.side_effect = [RuntimeError("pointer action failed"), {}]
+        with self.assertRaisesRegex(RuntimeError, "pointer action failed"):
+            await self.runtime._native_click({"x": 8, "y": 9})
+        self.assertEqual(self.runtime.bidi.send.await_args_list[-1],
+                         mock.call("input.releaseActions", {"context": "context-A"}))
+
+    async def test_invalid_click_parameters_do_not_send_pointer_actions(self):
+        cases = [{"x": True, "y": 2}, {"x": 1, "y": float("nan")},
+                 {"x": float("inf"), "y": 2}, {"x": -1, "y": 2}, {"x": 1},
+                 {"x": 1, "y": 2, "button": "fourth"}, {"x": 1, "y": 2, "button": []},
+                 {"x": 1, "y": 2, "count": True}, {"x": 1, "y": 2, "count": 0},
+                 {"x": 1, "y": 2, "count": 4}, {"target": ""}, {"target": 4},
+                 {"target": "#button", "x": 1, "y": 2}]
+        for params in cases:
+            with self.subTest(params=params), self.assertRaises(ValueError):
+                await self.runtime._native_click(params)
+        self.runtime.bidi.send.assert_not_awaited()
+        self.runtime.bidi.evaluate.assert_not_awaited()
+
+    async def test_missing_css_target_fails_before_input_is_pressed(self):
+        self.runtime.bidi.evaluate.return_value = {"error": "CSS target was not found"}
+        with self.assertRaisesRegex(ValueError, "not found"):
+            await self.runtime._native_click({"target": "#missing"})
+        self.runtime.bidi.send.assert_not_awaited()
+
+    async def test_legacy_click_still_routes_through_legacy_dispatch(self):
+        self.runtime.legacy = mock.Mock(_dispatch=mock.AsyncMock(return_value={"success": True, "data": "old-click"}))
+        self.assertEqual(await self.runtime.dispatch("click", {"target": "#button"}), "old-click")
+        self.runtime.legacy._dispatch.assert_awaited_once()
+        self.runtime.bidi.send.assert_not_awaited()
+
+
 if __name__ == "__main__":
     unittest.main()

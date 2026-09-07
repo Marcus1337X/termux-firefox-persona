@@ -865,6 +865,27 @@ def qualify_probe(
         if not workers_webgl_ok:
             diagnostic_reasons.append("worker WebGL contexts, identities or shader/framebuffer behavior do not match")
 
+    if {"audio_offline", "audio_realtime"} & set(template.required_capabilities):
+        from .audio_qualification import validate_offline, validate_realtime
+        audio_config = _mapping(final_config.get("audio"))
+        audio_observed = _mapping(page.get("audio_behavior"))
+        for capability, key, validator in (
+                ("audio_offline", "offline", validate_offline),
+                ("audio_realtime", "realtime", validate_realtime)):
+            if capability not in template.required_capabilities:
+                continue
+            observed = _mapping(audio_observed.get(key))
+            valid = validator(audio_config, observed)
+            if key == "realtime" and audio_observed.get("cleanup_error"):
+                valid = False
+            evidence.append(_evidence(
+                capability, _status(valid), snapshot_obj, audio_config,
+                {"data": observed, "workers": "notapplicable",
+                 "physical_input": "not_verified", "physical_output": "not_verified"},
+                ("window",), (f"observations.page.audio_behavior.{key}",)))
+            if not valid:
+                diagnostic_reasons.append(f"{capability} behavior is missing or does not match")
+
     if "graphics_full_combination" in template.required_capabilities:
         graphics = _mapping(final_config.get("graphics"))
         webgl = _mapping(page.get("webgl"))

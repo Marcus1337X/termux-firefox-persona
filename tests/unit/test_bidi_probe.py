@@ -130,6 +130,63 @@ class BiDiClientTests(unittest.IsolatedAsyncioTestCase):
             await client.close()
 
 
+class AudioProbeCleanupTests(unittest.IsolatedAsyncioTestCase):
+    class Client:
+        def __init__(self, *, offline_error=False):
+            self.offline_error = offline_error
+            self.calls = []
+
+        async def evaluate(self, context, expression, **_kwargs):
+            if "OfflineAudioContext" in expression:
+                stage = "offline"
+            elif "button.addEventListener" in expression:
+                stage = "setup"
+            elif "__tbpAudioCleanup" in expression:
+                stage = "cleanup"
+            else:
+                stage = "realtime"
+            self.calls.append((context, stage))
+            if stage == "offline":
+                if self.offline_error:
+                    raise RuntimeError("offline render failed")
+                return {"status": "pass"}
+            if stage == "setup":
+                return {"ready": True, "target": "#audio-start"}
+            if stage == "realtime":
+                return {"done": True, "closedState": "closed"}
+            return True
+
+    async def test_trusted_click_failure_still_cleans_up_audio_context(self):
+        client = self.Client()
+        clicked = []
+
+        async def trusted_click(target):
+            clicked.append(target)
+            raise RuntimeError("native click failed")
+
+        result = await ProbeRunner(client)._run_audio_probe("ctx", {}, trusted_click, 0.2)
+
+        self.assertEqual(clicked, ["#audio-start"])
+        self.assertEqual(result["offline"], {"status": "pass"})
+        self.assertEqual(result["realtime"]["error"], "native click failed")
+        self.assertEqual(client.calls, [("ctx", "offline"), ("ctx", "setup"), ("ctx", "cleanup")])
+
+    async def test_offline_failure_still_collects_realtime_and_cleans_up(self):
+        client = self.Client(offline_error=True)
+        clicked = []
+
+        async def trusted_click(target):
+            clicked.append(target)
+
+        result = await ProbeRunner(client)._run_audio_probe("ctx", {}, trusted_click, 0.2)
+
+        self.assertEqual(clicked, ["#audio-start"])
+        self.assertEqual(result["offline"]["error"], "offline render failed")
+        self.assertEqual(result["realtime"], {"done": True, "closedState": "closed"})
+        self.assertEqual(client.calls, [
+            ("ctx", "offline"), ("ctx", "setup"), ("ctx", "realtime"), ("ctx", "cleanup")])
+
+
 class ProbeTests(unittest.TestCase):
     def test_page_probe_has_graphics_diagnostic_and_cleanup(self) -> None:
         self.assertIn("webglcontextcreationerror", PROBE_HTML)

@@ -13,8 +13,8 @@ from src.persona.model import PersonaGenerator, TemplateCatalog
 
 
 HTML = '''<!doctype html><meta charset="utf-8"><title>Persona acceptance</title>
-<input id="entry"><button id="button" onclick="this.dataset.clicked='yes'">Click</button>
-<button id="popup" onclick="window.open(location.href,'persona-popup')">Popup</button>
+<input id="entry"><button id="button" onclick="this.dataset.clicked='yes';this.dataset.trusted=String(event.isTrusted)">Click</button>
+<button id="popup" onclick="this.dataset.trusted=String(event.isTrusted);window.open(location.href,'persona-popup')">Popup</button>
 <p style="font:32px serif">Hamburgefontsiv AVMW 0123456789 汉字中文测试天地玄黄 😀🌍🚀</p>'''.encode("utf-8")
 IDENTITY = """({languages:navigator.languages,cpu:navigator.hardwareConcurrency,
 tz:Intl.DateTimeFormat().resolvedOptions().timeZone,screen:[screen.width,screen.height],
@@ -26,7 +26,8 @@ forcedColors:matchMedia('(forced-colors: active)').matches}})"""
 
 FONT_TEMPLATE = "linux-firefox-fonts-glx-v1"
 WORKER_TEMPLATE = "linux-firefox-workers-glx-v1"
-FONT_TEMPLATES = {FONT_TEMPLATE, WORKER_TEMPLATE}
+AUDIO_TEMPLATE = "linux-firefox-audio-glx-v1"
+FONT_TEMPLATES = {FONT_TEMPLATE, WORKER_TEMPLATE, AUDIO_TEMPLATE}
 
 
 def create_pair(manager, template):
@@ -93,11 +94,19 @@ def font_window_expression(personas):
       for (let i = 0; i < pixels.length; i += 4) {
         if (pixels[i] !== 16 || pixels[i+1] !== 32 || pixels[i+2] !== 48 || pixels[i+3] !== 255) inkPixels++;
       }
-      return {local, serif: {sample, hash: (hash >>> 0).toString(16).padStart(8, '0'), inkPixels,
+      const audio = {};
+      if (__CHECK_AUDIO__) {
+        const context = new AudioContext();
+        try { audio.sampleRate = context.sampleRate; }
+        finally { await context.close(); }
+        audio.closedState = context.state;
+      }
+      return {...(__CHECK_AUDIO__ ? {audio} : {}), local, serif: {sample, hash: (hash >>> 0).toString(16).padStart(8, '0'), inkPixels,
         metrics: {width:m.width, ascent:m.actualBoundingBoxAscent, descent:m.actualBoundingBoxDescent,
                   left:m.actualBoundingBoxLeft, right:m.actualBoundingBoxRight}}};
     })()""".replace("__FAMILY_NAMES__", json.dumps(sorted(names), ensure_ascii=False)).replace(
-        "__LOCAL_NAMES__", json.dumps(local_names, ensure_ascii=False))
+        "__LOCAL_NAMES__", json.dumps(local_names, ensure_ascii=False)).replace(
+        "__CHECK_AUDIO__", json.dumps(all("audio" in persona.final_config for persona in personas)))
 
 
 def check_font_window(persona, observed):
@@ -107,6 +116,9 @@ def check_font_window(persona, observed):
     assert allowed.issubset(observed["local"])
     assert observed["serif"]["inkPixels"] > 0, "Font comparison canvas contains no text"
     assert observed["serif"]["metrics"]["width"] > 0
+    if "audio" in persona.final_config:
+        assert observed["audio"]["sampleRate"] == persona.final_config["audio"]["sample_rate"]
+        assert observed["audio"]["closedState"] == "closed"
 
 
 def stable_font_evidence(fonts):
@@ -146,11 +158,33 @@ def stable_worker_graphics(worker):
     return {"fonts": stable_font_evidence(worker["fonts"]), **graphics}
 
 
+def stable_audio_evidence(audio):
+    """Compare rendered samples and natural states, excluding realtime timing/phase."""
+    offline = audio["offline"]["actual"]
+    realtime = audio["realtime"]
+    return {
+        "offline": {
+            run: {key: offline[run][key] for key in (
+                "context", "renderBuffer", "channels", "stateBeforeRender",
+                "stateAfterRender", "stateAfterClose")}
+            for run in ("first", "second")
+        },
+        "realtime": {
+            **{key: realtime[key] for key in (
+                "sampleRate", "initialState", "runningState", "suspendedState",
+                "resumedState", "closedState", "maxChannelCount")},
+            "analyser": {key: realtime["analyser"][key] for key in (
+                "fftSize", "frequencyBinCount", "peakBin")},
+        },
+    }
+
+
 async def main(template=None):
     manager = PersonaManager()
     a, b = create_pair(manager, template)
     font_mode = template in FONT_TEMPLATES
-    worker_mode = template == WORKER_TEMPLATE
+    worker_mode = template in {WORKER_TEMPLATE, AUDIO_TEMPLATE}
+    audio_mode = template == AUDIO_TEMPLATE
     font_expression = font_window_expression((a, b)) if font_mode else None
     async def serve(reader, writer):
         try:
@@ -187,7 +221,12 @@ async def main(template=None):
             for context in persona.final_config["worker_graphics"]["contexts"]
         }
         results.setdefault("workers", {})[label] = worker_evidence
-        return {"window_fonts": window_evidence, "workers": worker_evidence}
+        evidence = {"window_fonts": window_evidence, "workers": worker_evidence}
+        if audio_mode:
+            audio = report["observations"]["page"]["audio_behavior"]
+            results.setdefault("audio", {})[label] = audio
+            evidence["audio"] = stable_audio_evidence(audio)
+        return evidence
 
     def passed(name):
         results["checks"].append(name)
@@ -226,9 +265,10 @@ async def main(template=None):
         await evaluate(ids[0], "(()=>{localStorage.setItem('owner','A');document.cookie='owner=A;max-age=3600';return true})()")
         # Native X11 input and legacy screenshot routing on a controlled page.
         await command(ids[0], "type", target="#entry", text="persona-A")
-        await command(ids[0], "click", target="#button")
+        await command(ids[0], "click_native", target="#button")
         assert await evaluate(ids[0], "document.querySelector('#entry').value") == "persona-A"
         assert await evaluate(ids[0], "document.querySelector('#button').dataset.clicked") == "yes"
+        assert await evaluate(ids[0], "document.querySelector('#button').dataset.trusted === 'true'") is True
         await command(ids[0], "screenshot")
         assert (manager.paths(ids[0])["directory"] / "screenshot.png").is_file()
         passed("native input and private screenshot")
@@ -265,6 +305,12 @@ async def main(template=None):
             assert font_a["serif"]["sample"] == font_b["serif"]["sample"]
             assert font_a["serif"]["hash"] != font_b["serif"]["hash"], "Different serif fonts rendered identical pixels"
             assert font_a["serif"]["metrics"] != font_b["serif"]["metrics"], "Different serif fonts have identical TextMetrics"
+            if audio_mode:
+                assert font_a["audio"]["sampleRate"] != font_b["audio"]["sampleRate"], \
+                    "Default AudioContext sample rates are not independently visible"
+                results.setdefault("audio", {})["dual_default_sample_rates"] = {
+                    "a": font_a["audio"], "b": font_b["audio"]}
+                passed("dual native AudioContext default sample rates differ")
             results["fonts"]["b_window_dual"] = font_b
             passed("dual font whitelists, same-sample Canvas and TextMetrics differ")
         assert manager.status(ids[0])["display"] != manager.status(ids[1])["display"]
@@ -311,13 +357,14 @@ async def main(template=None):
             assert await evaluate(ids[0], "navigator.permissions.query({name:'geolocation'}).then(p=>p.state)") == "prompt"
             passed("restart preserves geolocation and probe leaves site permission untouched")
         root_context = (await command(ids[0], "tab_list"))["contexts"][0]["context"]
-        await new_context_after(ids[0], "click", target="#popup")
+        await new_context_after(ids[0], "click_native", target="#popup")
         assert await evaluate(ids[0], IDENTITY) == identity
         if font_mode:
             assert await evaluate(ids[0], font_expression) == font_a
         assert await evaluate(ids[0], "localStorage.getItem('owner')") == "A"
         await command(ids[0], "tab_close")
         await command(ids[0], "tab_switch", context=root_context)
+        assert await evaluate(ids[0], "document.querySelector('#popup').dataset.trusted === 'true'") is True
         await new_context_after(ids[0], "press", key="ctrl+n")
         await command(ids[0], "goto", url=url)
         assert await evaluate(ids[0], IDENTITY) == identity

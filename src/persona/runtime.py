@@ -76,6 +76,8 @@ def firefox_settings(config: dict) -> tuple[dict, dict]:
                     name for name in (family, fallback) if name))
         if fonts["aliases"].get("emoji"):
             prefs["font.name-list.emoji"] = fonts["aliases"]["emoji"]
+    if config.get("audio"):
+        prefs["media.cubeb.force_sample_rate"] = config["audio"]["sample_rate"]
     return prefs, env
 
 
@@ -313,6 +315,64 @@ class PersonaRuntime:
         context = await self.select_context()
         return await self.bidi.evaluate(context, expression, timeout=timeout)
 
+    async def _native_click(self, params: dict) -> dict:
+        """Send real pointer actions so pages receive trusted user input."""
+        import math
+        button = params.get("button", "left")
+        count = params.get("count", 1)
+        if not isinstance(button, str) or button not in {"left", "middle", "right"}:
+            raise ValueError("button must be left, middle or right")
+        if type(count) is not int or not 1 <= count <= 3:
+            raise ValueError("count must be an integer from 1 to 3")
+        target = params.get("target")
+        context = self.context
+        if target is not None:
+            if not isinstance(target, str) or not target.strip():
+                raise ValueError("target must be a non-empty CSS selector")
+            if "x" in params or "y" in params:
+                raise ValueError("Provide either target or x/y coordinates")
+            position = await self.bidi.evaluate(context, """(() => {
+                const element = document.querySelector(%s);
+                if (!element) return {error: 'CSS target was not found'};
+                element.scrollIntoView({block:'center', inline:'center', behavior:'instant'});
+                const rect = element.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) return {error:'CSS target has no rendered box'};
+                return {x:rect.left + rect.width/2, y:rect.top + rect.height/2};
+            })()""" % json.dumps(target), timeout=10)
+            if not isinstance(position, dict) or position.get("error"):
+                raise ValueError(position.get("error", "Cannot locate CSS target")
+                                 if isinstance(position, dict) else "Cannot locate CSS target")
+            x, y = position.get("x"), position.get("y")
+        else:
+            x, y = params.get("x"), params.get("y")
+        for name, value in (("x", x), ("y", y)):
+            if type(value) not in (int, float) or not 0 <= value <= 2147483647 or not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite, non-negative viewport coordinate")
+        # BiDi pointer coordinates are integer CSS pixels, not device pixels.
+        x, y = math.floor(x), math.floor(y)
+        button_number = {"left": 0, "middle": 1, "right": 2}[button]
+        actions = [{"type": "pointerMove", "origin": "viewport", "x": x, "y": y, "duration": 0}]
+        for _ in range(count):
+            actions.extend([{"type": "pointerDown", "button": button_number},
+                            {"type": "pointerUp", "button": button_number}])
+        primary_error = None
+        try:
+            await self.bidi.send("input.performActions", {
+                "context": context, "actions": [{"type": "pointer", "id": "persona-native-mouse",
+                    "parameters": {"pointerType": "mouse"}, "actions": actions}],
+            })
+        except BaseException as exc:
+            primary_error = exc
+            raise
+        finally:
+            try:
+                await self.bidi.send("input.releaseActions", {"context": context})
+            except Exception:
+                if primary_error is None:
+                    raise
+                logger.warning("Could not release pointer actions after failed click", exc_info=True)
+        return {"method": "bidi", "x": x, "y": y, "button": button, "count": count, "context": context}
+
     async def dispatch(self, action: str, params: dict):
         if self.state.get("mode") == "requalify" and action not in {"status", "probe", "shutdown"}:
             raise ValueError("Validation workers only accept status, probe and shutdown")
@@ -329,6 +389,8 @@ class PersonaRuntime:
             asyncio.get_running_loop().call_later(0.1, self.stop_event.set)
             return {"stopping": True}
         await self.select_context(params.get("context"))
+        if action == "click_native":
+            return await self._native_click(params)
         if action == "goto":
             url = params.get("url", "")
             if not isinstance(url, str) or not url.startswith(("http://", "https://", "about:blank")):
@@ -364,7 +426,9 @@ class PersonaRuntime:
                 return await ProbeRunner(self.bidi, timeout=15).run(
                     probe_context, geolocation="geolocation" in self.persona.final_config,
                     font_config=self.persona.final_config.get("fonts"),
-                    worker_graphics=bool(self.persona.final_config.get("worker_graphics")))
+                    worker_graphics=bool(self.persona.final_config.get("worker_graphics")),
+                    audio_config=self.persona.final_config.get("audio"),
+                    trusted_click=lambda target: self._native_click({"target": target}))
             finally:
                 await self.bidi.send("browsingContext.close", {"context": probe_context})
                 await self.select_context(original)
