@@ -6,7 +6,7 @@
 
 字体实现包含两套真实 DejaVu/Noto/Emoji 集合、独立 Fontconfig 目录与缓存、TTC 字面筛选、CSS local() 正反向加载、三个通用别名、Canvas 像素、TextMetrics 和两种 PNG 导出解码检查。字体模板的 12 组实机生命周期验收全部通过：双实例可见集合及同文像素/测量不同，重启结果保持，标签页、脚本弹窗与 Ctrl+N 继承。两份截图已检查；双实例应用进程数为 30，测试实例均已停止。完整探针后 Firefox 会保留额外内容进程，验收在单实例资格检查后重启原 profile，再进入双实例阶段，不提高预算。
 
-新增 requalify 命令，保持原 ID、种子、最终配置和 profile；验证成功、进程停止且环境稳定后才更新资格。实机已验证旧严格身份保留，失败/取消/并发/版本不兼容及环境再次变化有单测覆盖。本轮 CI 待推送后记录。
+新增 requalify 命令，保持原 ID、种子、最终配置和 profile；验证成功、进程停止且环境稳定后才更新资格。实机已验证旧严格身份保留，失败/取消/并发/版本不兼容及环境再次变化有单测覆盖。实现提交 `20bc86d` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34108013570)。
 
 地理位置、四项外观及软件 GLX WebGL1/2 的 shader/像素/FBO 资格继续有效。Liberation、Worker 字体、Worker/OffscreenCanvas WebGL、完整 graphics precision/limits/extensions、核显身份、媒体/网络及标签页拖出仍未完成。完整第一批和第二批尚未全部完成。下列勾选仅表示明确子项已有证据，综合条目保持其原验收门槛。
 
