@@ -1,5 +1,24 @@
 # 开发与本机验收记录
 
+## 2026-09-07：原生 Audio 探针与可信点击
+
+新增 `linux-firefox-audio-glx-v1/1.0.0` 的四个组合全部通过本机资格验证，继承地区/外观、私有字体与 Window/三类 Worker 图形资格，增加 `audio_offline` 和 `audio_realtime`。明色组合选择 44100 Hz，暗色选择 48000 Hz；Firefox 原生默认 AudioContext 采样率由私有配置生效，不修改页面 API 返回值。
+
+- OfflineAudioContext 两次真实渲染双声道、2048 帧固定 buffer/gain 图，资格检查实际数值、样本 hash、尺寸和自然状态链。
+- AudioContext 通过真实指针点击获得用户激活，检查 resume/suspend/resume/close、时钟行为与 analyser 波形/频谱；末端 gain 为 0，资源在失败路径也清理。
+- `click_native` 使用 BiDi 指针动作，并在验收页面记录 `event.isTrusted`。旧 `click` 的默认 CSS 左键路径优先使用 DOM 合成点击，不能保证可信激活；它另有 human/坐标的 xdotool 路径。历史验收使用默认 CSS 路径，过去的点击成功记录不证明可信用户激活。
+- 双声道能力只限图内运算；物理输入/输出均为 `not_verified`，延迟是诊断观测，Audio Worker 为 `notapplicable`。未验证媒体设备、codec 或完整物理音频后端。
+- 环境快照升级 schema 3，纳入音频环境变量、配置摘要及可获得的服务端事实。旧 24 个组合已在新环境快照下逐个重新验证通过，ID、种子和最终配置保持；资格不由 schema 升级自动继承。
+- 生命周期脚本新增双实例默认 AudioContext 采样率隔离及派生上下文继承，重启保留 Offline 实际证据和 Realtime 稳定结构/状态比较，排除实时相位、时钟、延迟。完整探针仍在单实例阶段执行。
+
+本地 137 项单元测试、编译与差异检查通过。新四个组合 bootstrap 与旧 24 个组合重验全部通过，当前 schema 3 合格池共 28 个组合。实现提交 `90bfb9e` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34112107654)。
+
+四个 Audio bootstrap 身份：`persona_28d90612f97e1b204bc96269424b1378`、`persona_e67b23491ee2229ad90a3cf72ad5d6a9`、`persona_24941d4caa25cb7afcdef85b4f441d86`、`persona_04da5d6e159eefab1bcdb06ff3c48ddc`。
+
+16 组 Audio 实机生命周期验收全部通过，身份为 `persona_78f63997a4754087bd5825e835efc49f` / `persona_4fc7f7b383204ccda6748a93cb5c7227`。双实例分别呈现 44100/48000 Hz 默认 AudioContext，实际 Offline 渲染和 analyser 测量通过，重启证据保持；原生点击的 `isTrusted=true` 与脚本弹窗验证通过。应用进程数为基线 7、双实例 31、结束 7，测试实例已停止。
+
+复现命令：`python cli.py persona bootstrap --template linux-firefox-audio-glx-v1`，然后运行 `python -m tests.persona_live --template linux-firefox-audio-glx-v1`。旧身份先停止，再执行 `python cli.py persona requalify PERSONA_ID`；此操作保留 ID、种子、最终配置与 profile。
+
 ## 2026-09-07：Worker 字体与 OffscreenCanvas/WebGL
 
 新增 `linux-firefox-workers-glx-v1/1.0.0`，四个候选组合全部取得本机资格，当前合格组合为 24 个。旧 20 个组合及其资格范围保持不变，没有修改系统字体或图形环境。
@@ -76,7 +95,7 @@
 - GitHub Actions 的 Python 3.10 与 3.14 两组检查均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34100366602)。
 - 本地 59 项单元测试通过。单元测试中的模拟证据只检查结构与逻辑，不替代设备资格。
 - 基础真实后端模板 8/8 个组合完成 K60 至尊版串行 bootstrap，浏览器身份、CPU、显示、语言和时区满足当前 Window、三类 Worker 与 HTTP 资格检查。
-- 原生输入、点击及私有路径截图通过；标签页继承与刷新保持 Persona。
+- 原生键盘输入、默认 CSS 路径的 DOM 合成点击及私有路径截图通过；标签页继承与刷新保持 Persona。该次点击未验证 `isTrusted` 或可信用户激活。
 - 两个不同 DISPLAY 的 Persona 同时运行，分别导航和输入，localStorage 与持久 cookie 相互隔离。
 - 普通派生新窗口继承，以及关闭主窗口联动结束派生窗口和自有实例，通过实机验收。修复窗口定位后，六组实机验收全部通过。
 - 双实例运行时应用进程数为 30，测试前后均为 6；本次清理回到基线。

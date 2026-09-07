@@ -34,13 +34,15 @@ python cli.py persona command PERSONA_ID goto --params '{"url":"https://example.
 python cli.py persona command PERSONA_ID eval --params '{"expression":"navigator.languages"}'
 python cli.py persona command PERSONA_ID tab_new
 python cli.py persona command PERSONA_ID tab_list
-python cli.py persona command PERSONA_ID click --params '{"target":"button"}'
+python cli.py persona command PERSONA_ID click_native --params '{"target":"button"}'
 python cli.py persona command PERSONA_ID type --params '{"target":"input","text":"hello"}'
 python cli.py persona command PERSONA_ID screenshot
 python cli.py persona probe PERSONA_ID
 python cli.py persona stop PERSONA_ID
 python cli.py persona start PERSONA_ID
 ```
+
+`click_native` 使用 BiDi 指针动作发送浏览器原生鼠标输入，可触发 `event.isTrusted=true` 的点击；支持 CSS `target` 或 viewport 的 `x`/`y`，以及 `button`（left/middle/right）和 `count`（1–3）。旧 `click` 的默认 CSS 左键路径优先使用 DOM 合成点击，不能保证可信激活；它另有 human/坐标的 xdotool 路径。音频探针使用 `click_native` 并核对实际事件的 `isTrusted`。
 
 大部分上游 action 通过独立控制进程复用。Persona 的 UA/地区不能通过旧的覆盖命令随意改变；新身份使用 `create`。诊断候选使用 `create --experimental --template TEMPLATE_ID`，明确标记为实验，不改变默认资格门槛。
 
@@ -78,7 +80,7 @@ python cli.py persona bootstrap --template linux-firefox-software-glx-v1
 python cli.py persona create --template linux-firefox-software-glx-v1 --start
 ```
 
-它额外要求 Window 中的 WebGL1/2 通过 shader 编译、程序链接、红色三角形像素读回及 RGBA8 framebuffer 绿色像素读回。报告保留 precision、limits 与 extensions 的观测，但这些查询不代表全部精度、边界或扩展行为均已验收。Worker WebGL 和完整核显兼容仍未验证。
+它额外要求 Window 中的 WebGL1/2 通过 shader 编译、程序链接、红色三角形像素读回及 RGBA8 framebuffer 绿色像素读回。报告保留 precision、limits 与 extensions 的观测，但这些查询不代表全部精度、边界或扩展行为均已验收。该模板不要求 Worker WebGL；完整核显兼容仍未验证。
 
 `python -m tests.persona_graphics_live` 可串行比较默认、强制 GLX、强制 EGL 三种路径，结果保存在私有 `~/.tbp/graphics-diagnostics`。诊断脚本不会授予模板资格。
 
@@ -92,7 +94,7 @@ python -m tests.persona_live --template linux-firefox-fonts-glx-v1
 
 每个实例使用私有 Fontconfig 配置、字体目录和缓存，排除未选中的字体及 CJK 合集中其他地区的字面。Firefox 自带字体在此模板中禁用。没有修改系统字体目录，也没有安装 Liberation，因此不包含 Liberation 资格。
 
-字体资格检查 CSS `local()` 的正反向加载、三个通用字体别名、实际 Canvas 像素与 TextMetrics，以及 `toDataURL`/`toBlob` 导出后解码的像素一致性。字体文件的完整名称与 family 名称分别保存；不会用不存在的字体名称冒充支持。未启用 Firefox 的 `font.system.whitelist`，因为它会禁用所有 CSS `local()` 来源；集合由私有 Fontconfig 约束。Worker 字体尚未验证。
+字体资格检查 CSS `local()` 的正反向加载、三个通用字体别名、实际 Canvas 像素与 TextMetrics，以及 `toDataURL`/`toBlob` 导出后解码的像素一致性。字体文件的完整名称与 family 名称分别保存；不会用不存在的字体名称冒充支持。未启用 Firefox 的 `font.system.whitelist`，因为它会禁用所有 CSS `local()` 来源；集合由私有 Fontconfig 约束。该模板不要求 Worker 字体资格。
 
 `linux-firefox-workers-glx-v1` 进一步要求 Dedicated、Shared、Service Worker 分别通过字体和 WebGL 检查。它沿用四个地区/外观/字体组合，新增两个必需资格 `fonts_workers` 和 `webgl_workers`。旧模板的验证范围保持不变。
 
@@ -106,9 +108,23 @@ Worker 使用真实 `FontFace`、`self.fonts` 和 `OffscreenCanvas`，检查正�
 
 完整 Worker 探针仅在新模板显式启用。Service Worker 的异步验证使用 `event.waitUntil()` 保持生命周期，页面等待各 Worker 的最终结果。生命周期验收还比较重启前后的 Worker 字体/图形证据；双实例阶段使用轻量检查，完整探针在单实例阶段执行。规范依据：[Worker 字体来源](https://drafts.csswg.org/css-font-loading/#font-face-source)、[OffscreenCanvas](https://html.spec.whatwg.org/multipage/canvas.html#the-offscreencanvas-interface)。
 
-资格报告只覆盖模板列出的必需能力；外观、输入、Canvas 和 Audio 的额外观测不等于完整第二批验收。核显模板仍是候选；只修改 renderer 名称不能获得核显资格。`software` 为默认执行后端，`native` 仅表示不强制软件渲染，不能自动等同于手机 GPU 加速。
+`linux-firefox-audio-glx-v1` 继承 Worker 模板的四个地区/外观/字体组合，增加必需资格 `audio_offline` 和 `audio_realtime`。明色组合的原生默认 `AudioContext.sampleRate` 为 44100 Hz，暗色为 48000 Hz；通过实例私有 Firefox 配置选择采样率，不覆盖 JavaScript API 返回值。这是模板搭配，不表示配色与采样率存在普遍关系。
 
-配置、资格、profile 和日志默认存于 Termux 私有目录 `~/.tbp/personas`。`--root` 可指定另一个私有测试目录，放在子命令之前。共享存储不能用作 profile 根目录。Firefox/后端/字体环境变化会使原资格失效，不会静默修改已保存身份。
+```sh
+python cli.py persona bootstrap --template linux-firefox-audio-glx-v1
+python cli.py persona create --template linux-firefox-audio-glx-v1 --start
+python -m tests.persona_live --template linux-firefox-audio-glx-v1
+```
+
+Offline 探针使用真实双声道、2048 帧的 `OfflineAudioContext`，将固定输入经过 gain 节点渲染两次，核对实际采样率、声道、帧数、每声道样本和 hash，以及渲染前后自然状态。Realtime 探针创建不指定采样率的 `AudioContext`，通过 `click_native` 的可信点击激活，验证 resume/suspend/resume/close 状态、时钟推进与暂停，以及正弦波的 analyser 波形、频谱峰值和结构。图中最终 gain 为 0，避免探针发声；结束或输入失败都会请求清理。
+
+这些资格覆盖浏览器图内的音频运算。物理输入和输出仍标记 `not_verified`；双声道渲染不证明扬声器或麦克风具备相应能力，延迟只记录为诊断值。Audio 在三类 Worker 中标记 `notapplicable`。媒体设备、codec 与完整音频后端兼容尚未验收。
+
+Audio 生命周期脚本保留原字体和 Worker 检查。双实例阶段只创建默认 AudioContext、读取采样率后立即关闭，核对两个实例与各自配置一致且采样率不同，并检查新标签、刷新、弹窗、Ctrl+N 与重启继承。完整探针在单实例阶段执行；重启比较 Offline 的两次实际测量和 Realtime 的稳定结构、状态、频谱峰值，不要求实时相位、时钟或延迟重复相等。本轮四个新组合及旧 24 个组合在 schema 3 下全部通过资格验证，当前本机合格池为 28 个组合。Audio 生命周期 16 组实机验收通过，包括不同默认采样率、实际音频测量、重启保持及可信点击/弹窗；应用进程数为基线 7、双实例 31、结束 7。本地 137 项单元测试、编译和差异检查通过；实现提交 `90bfb9e` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34112107654)。
+
+资格报告只覆盖模板列出的必需能力；任何模板之外的额外观测不等于完整第二批验收。核显模板仍是候选；只修改 renderer 名称不能获得核显资格。`software` 为默认执行后端，`native` 仅表示不强制软件渲染，不能自动等同于手机 GPU 加速。
+
+配置、资格、profile 和日志默认存于 Termux 私有目录 `~/.tbp/personas`。`--root` 可指定另一个私有测试目录，放在子命令之前。共享存储不能用作 profile 根目录。Firefox/后端/字体环境变化会使原资格失效，不会静默修改已保存身份。环境快照现为 schema 3，另记录音频客户端选择、配置摘要与可获得的服务端事实；这些信息变化也需重新验证。旧 schema 的资格不能直接沿用。
 
 默认截图和其他相对导出路径位于该 Persona 私有实例目录，下载位于其 profile 的 `downloads`。环境变化后，先停止旧身份，再显式重新验证：
 

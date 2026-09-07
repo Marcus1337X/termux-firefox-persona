@@ -2,13 +2,15 @@
 
 ## 本轮进度更新（2026-09-07）
 
-本地 114 项单元测试通过。新增 `linux-firefox-workers-glx-v1` 四个组合全部完成实机资格验证；原有 20 个组合保持有效，当前合格池共 24 个组合。
+本地 137 项单元测试、编译和差异检查通过。新增 `linux-firefox-audio-glx-v1` 四个组合，继承 Window 与 Dedicated/Shared/Service Worker 字体和 WebGL 资格，并增加 `audio_offline`、`audio_realtime`。四个新组合 bootstrap 和旧 24 个组合在 schema 3 下重验全部通过，旧身份 ID、种子、最终配置保持，当前本机合格池共 28 个组合。实现提交 `90bfb9e` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34112107654)。
 
-新模板要求 Dedicated、Shared、Service Worker 分别通过本地字体正反向加载、三个通用别名、OffscreenCanvas 文字像素与 TextMetrics、convertToBlob PNG 解码，以及 WebGL1/2 shader/红色像素/RGBA8 framebuffer 绿色像素检查。各 Worker 字体渲染及图形身份还必须与 Window 一致。Worker 不具备的 toDataURL 明确标为不适用，缺失任一 Worker 证据不授予完整资格。
+明色/暗色组合分别配置原生默认 AudioContext 44100/48000 Hz。Offline 探针两次实际渲染双声道、2048 帧 buffer/gain 图并核对样本、hash、结构和自然状态；Realtime 探针通过 BiDi `click_native` 可信点击激活，检查状态转换、时钟及 analyser 波形/频谱，末端静音并清理资源。旧 `click` 的默认 CSS 左键路径优先使用 DOM 合成点击，不能保证可信激活；其 human/坐标路径另用 xdotool。历史验收使用默认 CSS 路径，点击成功不能证明 `isTrusted` 或可信用户激活。
 
-15 组实机生命周期验收全部通过，包括不同字体的双实例隔离、原生输入与截图、标签页/弹窗/Ctrl+N 继承、重启后 Window 与三类 Worker 的实际像素/测量/GL 结果保持。双实例应用进程数为 30，测试实例全部停止。完整探针在单实例阶段执行，再重启原 profile 进入双实例阶段，不提高预算。实现提交 `05c20f3` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34109507645)。
+音频范围仅覆盖浏览器图内运算：物理输入/输出为 `not_verified`，延迟只作诊断，Worker Audio 为 `notapplicable`。环境 schema 3 纳入音频配置和可获得的服务端事实，旧 24 个组合已显式重新验证通过。生命周期脚本已扩展双实例默认采样率及新标签、刷新、弹窗、Ctrl+N、重启继承；重启比较实际 Offline 证据及 Realtime 稳定结构/状态，排除时钟、相位与延迟。16 组 Audio 实机生命周期验收全部通过，含不同默认采样率、实际 Offline/analyser、重启证据保持以及 `isTrusted=true` 点击和弹窗；应用进程数为基线 7、双实例 31、结束 7，测试实例已停止。
 
-此前地理位置、四项外观、私有字体及保留 ID/种子/最终配置/profile 的 requalify 继续有效。Worker 图形探针仅在新模板启用，旧模板保持原资格范围。Liberation、完整 graphics precision/limits/extensions、核显身份、媒体/网络及标签页拖出仍未完成，完整第一批和第二批尚未全部完成。下列勾选只表示明确范围内已有实机证据。
+命令：`python cli.py persona bootstrap --template linux-firefox-audio-glx-v1`；通过后执行 `python -m tests.persona_live --template linux-firefox-audio-glx-v1`。旧身份使用 `python cli.py persona requalify PERSONA_ID` 保留 ID、种子、最终配置和 profile 重新验证。
+
+此前 Worker 模板的四个组合及旧 20 个组合在上一环境取得资格，15 组生命周期检查通过；实现提交 `05c20f3` 的 [CI 记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34109507645) 仅对应该历史实现。旧模板资格范围不扩大；Liberation、完整 graphics precision/limits/extensions、核显身份、物理音频/媒体/网络及标签页拖出仍未完成。以下勾选只对应已取得实机证据的明确子项，Audio 只勾选本轮实际通过的采样率、状态、analyser 和双声道图内运算，完整声道、物理设备及延迟仍未完成。
 
 > 目标：在 Android Termux + Termux:X11/Xvfb 中，为每个独立的 Firefox 顶层窗口创建一套经过约束的 Linux Firefox Persona。Persona 来自预先定义的合理模板，并在模板约束内随机组合；它不是允许用户逐字段填写的任意伪装配置。
 
@@ -239,10 +241,13 @@ instance_id
 
 ## Audio
 
-- [ ] `AudioContext.sampleRate`
-- [ ] `AudioContext.state`
-- [ ] Audio analyser behavior
-- [ ] channel capabilities
+原生 Offline/Realtime 探针与本轮实机验收已通过。下列勾选仅覆盖新 Audio 模板的明确范围；声道仅覆盖双声道图内运算，物理输入/输出仍为 `not_verified`，延迟观测不构成验收。
+
+- [x] `AudioContext.sampleRate`（新 Audio 模板原生默认 44100/48000 Hz）
+- [x] `AudioContext.state`（可信激活后的 resume/suspend/resume/close 自然转换）
+- [x] Audio analyser behavior（静音正弦图的实际波形、频谱峰值与结构）
+- [x] OfflineAudioContext 双声道、2048 帧 buffer/gain 图的两次实际样本、hash、结构及状态
+- [ ] channel capabilities（完整声道能力及物理通道仍未验收）
 - [ ] output latency
 - [ ] audio input / output device environment
 - [ ] 验证 AudioContext、采样率、声道、延迟、输入/输出设备和 PulseAudio/PipeWire/Termux 后端；没有设备或权限时标记 `partial`。
