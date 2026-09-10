@@ -28,38 +28,38 @@ async def run_check():
 
         # 1. Test IPHEY
         print("[3/5] Navigating to https://iphey.com/ ...", flush=True)
-        await manager.command(pid, "goto", {"url": "https://iphey.com/"})
-        print("[*] Waiting 12 seconds for IPHEY analysis to complete...", flush=True)
-        await asyncio.sleep(12)
-
-        iphey_js = """(() => {
-            const body = document.body ? document.body.innerText : '';
-            const trustworthy = body.includes('Trustworthy') || body.includes('You are trustworthy');
-            const suspicious = body.includes('Suspicious');
-            const sections = {};
-            document.querySelectorAll('.check-item, .card, section, div[class*="status"]').forEach(el => {
-                const text = el.innerText.trim();
-                if (text && text.length < 150) {
-                    sections[text.split('\\n')[0]] = text.replace(/\\n+/g, ' | ');
-                }
-            });
-            return {
-                title: document.title,
-                trustworthy,
-                suspicious,
-                snippet: body.slice(0, 1000)
-            };
-        })()"""
-        iphey_eval = await manager.command(pid, "eval", {"expression": iphey_js})
-        print(f"[+] IPHEY Result: {json.dumps(iphey_eval.get('result'), ensure_ascii=False, indent=2)}", flush=True)
-
-        # Capture screenshot for IPHEY
         try:
+            await manager.command(pid, "goto", {"url": "https://iphey.com/"})
+            print("[*] Waiting 12 seconds for IPHEY analysis to complete...", flush=True)
+            await asyncio.sleep(12)
+
+            iphey_js = """(() => {
+                const body = document.body ? document.body.innerText : '';
+                const trustworthy = body.includes('Trustworthy') || body.includes('You are trustworthy');
+                const suspicious = body.includes('Suspicious');
+                const sections = {};
+                document.querySelectorAll('.check-item, .card, section, div[class*="status"]').forEach(el => {
+                    const text = el.innerText.trim();
+                    if (text && text.length < 150) {
+                        sections[text.split('\\n')[0]] = text.replace(/\\n+/g, ' | ');
+                    }
+                });
+                return {
+                    title: document.title,
+                    trustworthy,
+                    suspicious,
+                    snippet: body.slice(0, 1000)
+                };
+            })()"""
+            iphey_eval = await manager.command(pid, "eval", {"expression": iphey_js})
+            print(f"[+] IPHEY Result: {json.dumps(iphey_eval.get('result'), ensure_ascii=False, indent=2)}", flush=True)
+
+            # Capture screenshot for IPHEY
             iphey_shot = ARTIFACTS_DIR / "iphey_result.png"
-            shot_res = await manager.command(pid, "screenshot", {"path": str(iphey_shot)})
+            await manager.command(pid, "screenshot", {"path": str(iphey_shot)})
             print(f"[+] IPHEY Screenshot saved to {iphey_shot}", flush=True)
         except Exception as e:
-            print(f"[-] Screenshot warning: {e}", flush=True)
+            print(f"[-] IPHEY check warning (network or timeout): {e}", flush=True)
 
         # 2. Test CreepJS
         print("[4/5] Navigating to https://abrahamjuliot.github.io/creepjs/ ...", flush=True)

@@ -18,3 +18,4 @@ ext/
 diag_*.py
 DESIGN.md
 FIREFOX_PROTOCOLS_REPORT.md
+bin/

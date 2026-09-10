@@ -106,6 +106,7 @@ class BrowserPilot:
         self._virgl = None
         self._xvfb_proc = None
         self._wm_proc = None  # Window manager (openbox)
+        self._panel_proc = None  # Virtual desktop strut panel (tbp-panel)
         self._chrome_proc = None
         self._ws_url = None
         self._user_data_dir = None
@@ -250,6 +251,16 @@ class BrowserPilot:
         else:
             self._wm_proc = None
             logger.warning("openbox not found — window management may not work")
+
+        panel_bin = shutil.which("tbp-panel")
+        if panel_bin and os.path.basename(panel_bin) == "tbp-panel":
+            self._panel_proc = await asyncio.create_subprocess_exec(
+                panel_bin, self.display, "40",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                env=env,
+            )
+            await asyncio.sleep(0.1)
 
         if self._xvfb_proc.returncode is not None:
             raise RuntimeError("Xvfb failed to start")
@@ -400,7 +411,7 @@ class BrowserPilot:
         Cleans up temporary user-data-dir afterward.
         """
         cancellation = None
-        for proc in (self._chrome_proc, self._wm_proc, self._xvfb_proc):
+        for proc in (self._chrome_proc, self._panel_proc, self._wm_proc, self._xvfb_proc):
             if proc and proc.returncode is None:
                 try:
                     proc.terminate()
@@ -424,6 +435,7 @@ class BrowserPilot:
                 except Exception as e:
                     logger.warning("Error stopping process: %s", e)
         self._chrome_proc = None
+        self._panel_proc = None
         self._wm_proc = None
         self._xvfb_proc = None
 

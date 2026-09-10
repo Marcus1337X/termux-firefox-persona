@@ -28,10 +28,15 @@ if ! pip install $PIP_FLAGS "$SCRIPT_DIR" 2>&1; then
     exit 1
 fi
 
-# Optional: Chromium Python deps
-echo "[4/4] Installing optional dependencies and patching Firefox..."
+# Optional: Chromium Python deps & Native desktop helpers
+echo "[4/4] Installing optional dependencies, native panel and patching Firefox..."
 pip install $PIP_FLAGS websockets 2>/dev/null || true
 python3 -m src.persona.patch 2>/dev/null || true
+if command -v clang &>/dev/null && [ -f "$SCRIPT_DIR/src/native/persona_panel.c" ]; then
+    PREFIX_BIN="${PREFIX:-/data/data/com.termux/files/usr}/bin"
+    clang -O2 "$SCRIPT_DIR/src/native/persona_panel.c" -lX11 -o "$PREFIX_BIN/tbp-panel" 2>/dev/null || true
+    chmod +x "$PREFIX_BIN/tbp-panel" 2>/dev/null || true
+fi
 
 # Verify installation
 if command -v tbp &>/dev/null; then
