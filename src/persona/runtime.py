@@ -237,6 +237,24 @@ class PersonaRuntime:
                 self.persist("starting", display=display)
                 self.paths["profile"].mkdir(mode=0o700, exist_ok=True)
                 config = dict(self.persona.final_config)
+                auto_align = config.get("locale", {}).get("auto_align_timezone", True)
+                disable_env = os.environ.get("TBP_AUTO_ALIGN_TIMEZONE", "").lower() in ("0", "false", "no", "off")
+                detected_geoip = None
+                if auto_align and not disable_env:
+                    from .geoip import detect_exit_geoip
+                    try:
+                        detected_geoip = await detect_exit_geoip(timeout=2.0)
+                        if detected_geoip and detected_geoip.get("timezone"):
+                            logger.info("Auto-aligning timezone to exit IP: %s (%s)",
+                                        detected_geoip.get("timezone"), detected_geoip.get("ip"))
+                            config["locale"] = dict(config["locale"])
+                            config["locale"]["timezone"] = detected_geoip["timezone"]
+                            if "geolocation" in config and detected_geoip.get("latitude") is not None and detected_geoip.get("longitude") is not None:
+                                config["geolocation"] = dict(config["geolocation"])
+                                config["geolocation"]["latitude"] = float(detected_geoip["latitude"])
+                                config["geolocation"]["longitude"] = float(detected_geoip["longitude"])
+                    except Exception as exc:
+                        logger.warning("Failed to auto-align timezone to exit IP: %s", exc)
                 if config.get("graphics", {}).get("context_backend") == "glx" and self.manager.backend != "software":
                     raise ValueError("The software GLX preset requires the software execution backend")
                 prefs, env = firefox_settings(config)
@@ -295,7 +313,8 @@ class PersonaRuntime:
                     self.handle_client, path=str(self.paths["socket"]), limit=4 * 1024 * 1024)
                 os.chmod(self.paths["socket"], 0o600)
                 self.persist("ready", bidi_port=self.pilot._session.remote_debugging_port,
-                             root_window=self.root_wid, context=self.context)
+                             root_window=self.root_wid, context=self.context,
+                             detected_geoip=detected_geoip)
                 self.watchdog = asyncio.create_task(self.monitor())
                 await self.stop_event.wait()
             except Exception as exc:

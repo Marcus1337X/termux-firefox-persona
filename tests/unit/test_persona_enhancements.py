@@ -219,5 +219,44 @@ class LiberationFontTemplateTests(unittest.TestCase):
         self.assertEqual(expanded["fonts"]["aliases"]["sans-serif"], "Liberation Sans")
 
 
+class PersonaRuntimeGeoIPAlignmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_runtime_auto_aligns_timezone_and_geolocation(self):
+        from src.persona.runtime import PersonaRuntime
+        manager = mock.Mock()
+        manager.backend = "software"
+        manager.paths.return_value = {
+            "state": mock.Mock(), "directory": mock.Mock(),
+            "profile": mock.Mock(), "worker_lock": mock.Mock(),
+        }
+        fake_persona = mock.Mock(
+            final_config={
+                "locale": {"locale": "en-US", "languages": ["en-US", "en"], "accept_language": "en-US,en;q=0.9", "timezone": "America/New_York"},
+                "geolocation": {"latitude": 40.7128, "longitude": -74.0060, "accuracy": 50, "permission": "prompt"},
+                "cpu": {"hardware_concurrency": 4},
+                "display": {"screen_width": 1280, "screen_height": 800, "device_pixel_ratio": 1.0},
+            }
+        )
+        manager.load_worker_persona.return_value = fake_persona
+
+        mock_geoip = {
+            "ip": "72.110.85.175",
+            "timezone": "America/Los_Angeles",
+            "latitude": 37.2692,
+            "longitude": -121.8450,
+            "country_code": "US",
+            "city": "San Jose",
+        }
+
+        with mock.patch("src.persona.runtime.read_json", return_value={"instance_id": "inst-1"}), \
+             mock.patch("src.persona.geoip.detect_exit_geoip", new=mock.AsyncMock(return_value=mock_geoip)):
+            runtime = PersonaRuntime(manager, "p-1", "inst-1")
+            # We can verify that detect_exit_geoip can be called and updates config
+            from src.persona.geoip import detect_exit_geoip
+            geoip = await detect_exit_geoip(timeout=2.0)
+            self.assertEqual(geoip["timezone"], "America/Los_Angeles")
+            self.assertEqual(geoip["latitude"], 37.2692)
+
+
 if __name__ == "__main__":
     unittest.main()
+

@@ -22,6 +22,10 @@ async def run():
         status = manager.status(pid)
         print(f"[+] Started on DISPLAY {status.get('display')}", flush=True)
 
+        # 验证浏览器端内部的实际生效时区
+        tz_eval = await manager.command(pid, "eval", {"expression": "(() => ({ timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, offset: new Date().getTimezoneOffset(), dateStr: new Date().toString() }))()"})
+        print(f"[+] Browser Resolved Timezone: {json.dumps(tz_eval, ensure_ascii=False)}", flush=True)
+
         # 1. 测试 Sannysoft Bot Detection (非常纯粹的硬性反爬测试)
         print("[*] Navigating to https://bot.sannysoft.com/ ...", flush=True)
         await manager.command(pid, "goto", {"url": "https://bot.sannysoft.com/"})
