@@ -29,8 +29,9 @@ if ! pip install $PIP_FLAGS "$SCRIPT_DIR" 2>&1; then
 fi
 
 # Optional: Chromium Python deps
-echo "[4/4] Installing optional dependencies..."
+echo "[4/4] Installing optional dependencies and patching Firefox..."
 pip install $PIP_FLAGS websockets 2>/dev/null || true
+python3 -m src.persona.patch 2>/dev/null || true
 
 # Verify installation
 if command -v tbp &>/dev/null; then
