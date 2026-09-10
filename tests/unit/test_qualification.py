@@ -438,6 +438,69 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(next(item for item in failed.evidence
                               if item.capability == "webgl_workers").status, "partial")
 
+    def test_webgl_limits_and_precision_validation(self):
+        base_config = copy.deepcopy(self.template.base_config)
+        base_config["graphics"] = {
+            "identity_class": "native-linux-firefox", "hardware_class": "software",
+            "execution_backend": "software", "context_backend": "glx",
+            "vendor": "Mesa", "renderer": "llvmpipe, or similar",
+            "webgl1": True, "webgl2": True,
+        }
+        template = replace(self.template, base_config=base_config,
+                           required_capabilities=self.template.required_capabilities +
+                           ("webgl_window", "webgl_workers"))
+        config = template.expand(0, "154.0.1")
+        persona = Persona.build(seed=16, template=template, final_config=config,
+                                snapshot=self.snapshot, experimental=True)
+
+        valid_gl = self._webgl_observation_for_workers()
+        valid_gl["limits"] = {
+            "MAX_TEXTURE_SIZE": 16384, "MAX_CUBE_MAP_TEXTURE_SIZE": 16384,
+            "MAX_VERTEX_ATTRIBS": 16, "MAX_VERTEX_UNIFORM_VECTORS": 4096,
+            "MAX_FRAGMENT_UNIFORM_VECTORS": 4096,
+        }
+        valid_gl["precision"] = {
+            "vertexHighFloat": {"precision": 23, "rangeMin": 127, "rangeMax": 127},
+            "fragmentHighFloat": {"precision": 23, "rangeMin": 127, "rangeMax": 127},
+            "vertexMediumFloat": {"precision": 23, "rangeMin": 127, "rangeMax": 127},
+            "fragmentMediumFloat": {"precision": 23, "rangeMin": 127, "rangeMax": 127},
+        }
+        valid_gl["extensions"] = ["WEBGL_debug_renderer_info", "WEBGL_lose_context"]
+
+        probe = self._report()
+        probe["observations"]["page"]["webgl"] = copy.deepcopy(valid_gl)
+        for realm in ("dedicated", "shared", "service"):
+            probe["observations"]["page"]["workers"][realm]["webgl"] = copy.deepcopy(valid_gl)
+
+        # Baseline with full limits/precision/extensions passes
+        self.assertTrue(qualify_probe(persona, self.snapshot, probe,
+                                      catalog=TemplateCatalog([template])).passed)
+
+        # Limits below minimum fails
+        bad_limits = copy.deepcopy(probe)
+        bad_limits["observations"]["page"]["webgl"]["limits"]["MAX_TEXTURE_SIZE"] = 1024
+        self.assertFalse(qualify_probe(persona, self.snapshot, bad_limits,
+                                       catalog=TemplateCatalog([template])).passed)
+
+        # Precision below IEEE single precision fails
+        bad_prec = copy.deepcopy(probe)
+        bad_prec["observations"]["page"]["webgl"]["precision"]["fragmentHighFloat"]["precision"] = 16
+        self.assertFalse(qualify_probe(persona, self.snapshot, bad_prec,
+                                       catalog=TemplateCatalog([template])).passed)
+
+        # Missing debug extension fails
+        bad_ext = copy.deepcopy(probe)
+        bad_ext["observations"]["page"]["webgl"]["extensions"] = ["EXT_color_buffer_half_float"]
+        self.assertFalse(qualify_probe(persona, self.snapshot, bad_ext,
+                                       catalog=TemplateCatalog([template])).passed)
+
+        # Worker limits mismatch fails webgl_workers
+        worker_mismatch = copy.deepcopy(probe)
+        worker_mismatch["observations"]["page"]["workers"]["dedicated"]["webgl"]["limits"]["MAX_TEXTURE_SIZE"] = 8192
+        rep = qualify_probe(persona, self.snapshot, worker_mismatch, catalog=TemplateCatalog([template]))
+        self.assertFalse(rep.passed)
+        self.assertEqual(next(e for e in rep.evidence if e.capability == "webgl_workers").status, "partial")
+
 
 if __name__ == "__main__":
     unittest.main()

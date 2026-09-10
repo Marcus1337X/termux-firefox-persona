@@ -1,5 +1,62 @@
 # 开发与本机验收记录
 
+## 2026-09-10：键盘/滚轮细粒度输入、应用层软流控、虚拟媒体流及字体族细节全面修复闭环
+
+完成可纯用户态解决的 4 项细节增强与修复，实现端到端闭环：
+
+1. **滚轮（Wheel）与键盘（Keyboard）输入细粒度支持**：
+   - 在 `src/persona/runtime.py` 中增加 `_native_wheel` 与 `_native_key` 方法，基于 BiDi `input.performActions` 实现桌面滚轮（`deltaX`/`deltaY`，CSS 坐标转换）与物理键盘（单字打字与 `Control` 等修饰组合键序列），并通过 `dispatch` 路由对外暴露；
+   - 在 `src/persona/probe.py` 中更新探针，实测 `onwheel` 与 `KeyboardEvent` 原生支持状态；
+   - 在 `src/persona/model.py` 与 `src/persona/qualification.py` 中支持 `input.wheel` 与 `input.keyboard` 显式校验。
+2. **应用层网络损伤模拟器（NetworkShaper 软流控）**：
+   - 在 `src/persona/runtime.py` 实现 `NetworkShaper`，支持在非 root 环境下注入应用层延迟（`latency_ms`）与丢包率模拟（`packet_loss_rate`），在 Persona 运行时挂载 `simulate_network_packet`；
+   - 在资格检验中精准界定其为 `partial`（应用层模拟），不伪造内核特权。
+3. **Firefox 虚拟媒体流（Fake Media Streams）支持**：
+   - 在 `src/persona/model.py` 中支持 `media.fake_streams: bool` 配置；
+   - 在 `src/persona/runtime.py` 的 `firefox_settings` 中绑定 `media.navigator.streams.fake` 与 `media.navigator.permission.disabled`，无物理设备时支持回环生成虚拟时钟视频和正弦音频，支持 WebRTC 虚拟回环；在资格核查中明确界定。
+4. **Liberation 字体族兼容支持**：
+   - 验证并支持配置 `Liberation Sans`、`Liberation Serif`、`Liberation Mono` 字体白名单、别名及采样，与 fontconfig 机制平滑兼容。
+5. **测试基线升级**：
+   - 新增 `tests/unit/test_persona_enhancements.py`（8 项测试全过）；
+   - 全量单元测试集由 228 项提升至 **236 项全部通过（0 失败，0 错误）**。
+
+## 2026-09-10：多显示隔离、硬件媒体/WebRTC、网络流控声明、真实 GPU 驱动栈与综合生命周期全闭环
+
+完成剩余核心模块的开发、模型约束、探针采集、能力资格界定与端到端生命周期验证：
+
+1. **多显示环境隔离与进程精准回收（Multi-Display & Process Isolation）**：
+   - 在 `src/persona/runtime.py` 实现基于 `flock` 的动态 DISPLAY 租借分配器，规避既有系统 `.X{num}-lock`，支持多实例并发运行；
+   - 在 `src/persona/manager.py` 的 `stop` 中严格定向回收归属目标实例的 worker 及其精确 tracking 资源（PID + start_ticks 校验），禁止全局误杀，停止实例 A 不干扰并发实例 B。
+2. **硬件媒体与 WebRTC 能力界定（Media Devices & WebRTC）**：
+   - 在 `src/persona/probe.py` 中引入 `navigator.mediaDevices.enumerateDevices` 与 `RTCPeerConnection` 探针；
+   - 在 `src/persona/qualification.py` 中增加 `media_devices_and_webrtc` 资格判定：当无实际硬件摄像头/麦克风时，严禁虚构设备，必须如实标记为 `unsupported` 或 `not_verified`；支持通过 `media.peerconnection.enabled` 控制 WebRTC 生效。
+3. **底层网络流控与损伤模拟（Network Traffic Shaping）**：
+   - 在 `src/persona/model.py` 中规范 `network.shaping` 模型校验（`latency_ms`、`packet_loss_rate`、`mode`）；
+   - 在 `src/persona/qualification.py` 中增加 `network_traffic_shaping` 资格核查：在 Android Termux 非 root 边界下（无 `CAP_NET_ADMIN` / 缺失 `tc`），要求底层内核级流控时如实判定为 `unsupported` 并附带确凿证据，应用层模拟标记为 `partial`，不将缺失能力伪造为成功。
+4. **真实硬件 GPU 驱动栈与核显模板兼容性界定（GPU Driver Stack Compatibility）**：
+   - 完善 `graphics_full_combination` 资格核查：深入比对 `hardware_class`（如 `integrated-gpu`）与当前宿主执行后端 `snapshot.environment.backend` 及 WebGL 观测值；
+   - 在 Mesa llvmpipe 软件渲染栈下执行核显候选模板时，如实裁决为 `unsupported`，明确指出候选模板不可在软件后端上冒充核显已验证；对软件渲染栈核查真实着色器编译与三角形光栅化读回。
+5. **本地实机综合生命周期验收（Lifecycle E2E）**：
+   - 编写 `tests/unit/test_persona_lifecycle_e2e.py`，完整覆盖多 Persona 独立启动、并发 Tab 指令隔离分发、定向停止、单实例平滑恢复及全量资源清理；
+   - 全量单元测试集由 216 项提升至 **228 项全部通过（0 失败，0 错误）**。
+
+- 隐私与策略控制：核查 `navigator.doNotTrack`（"1" 或 "unspecified"）与 HTTP Document headers `DNT: 1` 强一致；核查 `navigator.globalPrivacyControl`（boolean）与 HTTP `Sec-GPC: 1` 及 Worker 跨 Realm 一致性；在 `runtime.py` 中通过 Firefox 原生 prefs（`privacy.donottrackheader.*`、`privacy.globalprivacycontrol.*`、`privacy.trackingprotection.*` 与 `network.cookie.cookieBehavior`）实现隐私策略底层自动注入与生效。
+- 实例级网络代理：在 Persona 配置与运行时中支持实例级私有代理配置（`direct` 或 `manual` http/ssl/socks 代理），通过私有 profile 的 `network.proxy.*` 实现多 Persona 网络环境的严格隔离，不产生跨实例代理污染。
+- 权限状态探测：扩展 `_permission_state` 与 `_query_permissions`，支持对 `geolocation`、`notifications` 等标准权限状态进行安全探测与真实状态记录，不虚构不存在的设备权限。
+- 存储 API 与 Cookies：核查 Window 的 `localStorage`、`sessionStorage`、`indexedDB` 以及 Cache API（`caches`）可用性及基本存取行为，依托 Firefox 私有 profile 实现跨 Persona 强隔离，并验证顶层浏览上下文间的 `sessionStorage` 独立隔离语义；在运行时支持 `cookies_get` 与 `cookies_clear`，核查多实例间 cookies.sqlite 物理文件隔离与 session cookie 生命周期。
+- 上下文与生命周期：验证 `tab_new`、`window_new` 继承所属 Persona 身份与 `persona_id`，非法上下文无法串用；`goto` 严格校验受限协议，`reload` 维持当前上下文；支持全屏状态受控切换（`fullscreen`）。
+- 网络状态：核查 Window 与 Dedicated/Shared/Service Worker 的 `navigator.onLine` 状态跨 Realm 一致性。
+- 本地 216 项单元测试全部通过（累计 0 失败 0 错误）。
+
+## 2026-09-10：桌面输入设备与窗口交互资格推进
+
+新增 `linux-firefox-interaction-glx-v1/1.0.0` 候选模板，继承媒体六编解码器、Audio、私有字体及 Window/三类 Worker 图形配置，新增必需资格 `input_window`。
+
+- 显式要求桌面精确指针（`pointer: fine`、`any-pointer: fine`）、桌面悬停能力（`hover: hover`、`any-hover: hover`）以及零触摸点（`maxTouchPoints: 0`）。Worker 中的 `maxTouchPoints` 亦纳入跨 Realm 一致性检查。
+- 窗口状态纳入前台活跃验证，要求 `document.visibilityState == "visible"` 且 `document.hasFocus() == true`。
+- 第一批次未闭环的 `window.screenX/screenY` 非负坐标核查、`screen.orientation` landscape 有效性核查，以及 Window 与 Dedicated/Shared/Service Worker 的 `navigator.language == locale` 跨 Realm 一致性检查全部实现并受单测约束。
+- 本地 182 项单元测试全部通过（新增 14 项输入与交互相关测试），覆盖模板模型展开、约束拒绝非法配置、缺失/伪造 Worker 状态拒绝及全部 14 项能力通过验证。
+
 ## 2026-09-07：有限媒体 codec 解码/播放
 
 新增 `linux-firefox-media-glx-v1/1.0.0` 四个组合，已全部通过本机资格验证，继承 Audio、私有字体及 Window/三类 Worker 图形配置，新增必需资格 `media_codecs_window`。六个 fixture 必须全部通过查询与实际行为检查，不能只凭 `supported=true` 获得资格。

@@ -142,7 +142,7 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
         fail("accept_language sequence must match languages")
 
     fonts = config.get("fonts")
-    if template_id in {"linux-firefox-fonts-glx-v1", "linux-firefox-workers-glx-v1", "linux-firefox-audio-glx-v1", "linux-firefox-media-glx-v1"} and fonts is None:
+    if template_id in {"linux-firefox-fonts-glx-v1", "linux-firefox-workers-glx-v1", "linux-firefox-audio-glx-v1", "linux-firefox-media-glx-v1", "linux-firefox-interaction-glx-v1", "linux-firefox-privacy-storage-glx-v1"} and fonts is None:
         fail("font preset requires fonts")
     if fonts is not None:
         if not isinstance(fonts, Mapping) or fonts.get("policy") != "whitelist":
@@ -196,7 +196,7 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
             fail("geolocation.permission is invalid")
     # Region relationships belong to this finite preset family, not to every
     # multilingual desktop. Other families can define different relationships.
-    if template_id in {"linux-firefox-region-appearance-v1", "linux-firefox-software-glx-v1", "linux-firefox-fonts-glx-v1", "linux-firefox-workers-glx-v1", "linux-firefox-audio-glx-v1", "linux-firefox-media-glx-v1"}:
+    if template_id in {"linux-firefox-region-appearance-v1", "linux-firefox-software-glx-v1", "linux-firefox-fonts-glx-v1", "linux-firefox-workers-glx-v1", "linux-firefox-audio-glx-v1", "linux-firefox-media-glx-v1", "linux-firefox-interaction-glx-v1", "linux-firefox-privacy-storage-glx-v1"}:
         regions = {"zh-CN": ("Asia/Shanghai", 31.2304, 121.4737),
                    "en-US": ("America/New_York", 40.7128, -74.0060)}
         expected = regions.get(locale["locale"])
@@ -205,7 +205,7 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
             fail("geolocation and timezone must match this preset's locale region")
         if "contrast" not in appearance:
             fail("regional appearance requires an explicit contrast preference")
-    if template_id in {"linux-firefox-software-glx-v1", "linux-firefox-fonts-glx-v1", "linux-firefox-workers-glx-v1", "linux-firefox-audio-glx-v1", "linux-firefox-media-glx-v1"}:
+    if template_id in {"linux-firefox-software-glx-v1", "linux-firefox-fonts-glx-v1", "linux-firefox-workers-glx-v1", "linux-firefox-audio-glx-v1", "linux-firefox-media-glx-v1", "linux-firefox-interaction-glx-v1", "linux-firefox-privacy-storage-glx-v1"}:
         graphics = config.get("graphics")
         expected_graphics = {
             "identity_class": "native-linux-firefox", "hardware_class": "software",
@@ -217,7 +217,7 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
                        for name, value in expected_graphics.items())):
             fail("software GLX graphics must match the measured Mesa software identity")
     worker_graphics = config.get("worker_graphics")
-    if template_id in {"linux-firefox-workers-glx-v1", "linux-firefox-audio-glx-v1", "linux-firefox-media-glx-v1"} and worker_graphics is None:
+    if template_id in {"linux-firefox-workers-glx-v1", "linux-firefox-audio-glx-v1", "linux-firefox-media-glx-v1", "linux-firefox-interaction-glx-v1", "linux-firefox-privacy-storage-glx-v1"} and worker_graphics is None:
         fail("Worker graphics preset requires worker_graphics")
     if worker_graphics is not None:
         if (not isinstance(worker_graphics, Mapping)
@@ -227,7 +227,7 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
                 or worker_graphics.get("webgl") is not True):
             fail("worker_graphics must require fonts and WebGL in dedicated, shared and service contexts")
     audio = config.get("audio")
-    if template_id in {"linux-firefox-audio-glx-v1", "linux-firefox-media-glx-v1"} and audio is None:
+    if template_id in {"linux-firefox-audio-glx-v1", "linux-firefox-media-glx-v1", "linux-firefox-interaction-glx-v1", "linux-firefox-privacy-storage-glx-v1"} and audio is None:
         fail("audio preset requires audio")
     if audio is not None:
         if not isinstance(appearance, Mapping) or appearance.get("color_scheme") not in {"light", "dark"}:
@@ -246,19 +246,112 @@ def _validate_expanded_config(config: Mapping[str, Any], template_id: str) -> No
 
 
     media = config.get("media")
-    if template_id == "linux-firefox-media-glx-v1" and media is None:
+    if template_id in {"linux-firefox-media-glx-v1", "linux-firefox-interaction-glx-v1", "linux-firefox-privacy-storage-glx-v1"} and media is None:
         fail("media preset requires media")
     if media is not None:
-        expected_media = {
-            "fixture_set": "native-codecs-v1",
-            "codecs": ["h264", "vp8", "vp9", "av1", "aac", "opus"],
-            "scope": "native-decode-playback", "physical_input": "not_verified",
-            "physical_output": "not_verified", "webrtc": "not_verified",
-        }
-        if (not isinstance(media, Mapping) or set(media) != set(expected_media)
-                or any(type(media.get(name)) is not type(value) or media.get(name) != value
-                       for name, value in expected_media.items())):
-            fail("media must match the finite native fixture preset without physical device or WebRTC claims")
+        if not isinstance(media, Mapping):
+            fail("media must be an object")
+        expected_keys = {"fixture_set", "codecs", "scope", "physical_input", "physical_output", "webrtc"}
+        optional_keys = {"fake_streams"}
+        if not (set(media).issubset(expected_keys | optional_keys) and expected_keys.issubset(set(media))):
+            fail("media must declare the finite native codec fixtures")
+        if media.get("fixture_set") != "native-codecs-v1":
+            fail("media.fixture_set must be native-codecs-v1")
+        if media.get("codecs") != ["h264", "vp8", "vp9", "av1", "aac", "opus"]:
+            fail("media.codecs must match native-codecs-v1")
+        if media.get("scope") != "native-decode-playback":
+            fail("media.scope must be native-decode-playback")
+        if media.get("physical_input") not in ("not_verified", "unsupported", "partial"):
+            fail("media.physical_input must be not_verified, unsupported, or partial")
+        if media.get("physical_output") not in ("not_verified", "unsupported", "partial"):
+            fail("media.physical_output must be not_verified, unsupported, or partial")
+        if media.get("webrtc") not in ("not_verified", "unsupported", "disabled"):
+            fail("media.webrtc must be not_verified, unsupported, or disabled")
+        if "fake_streams" in media and type(media.get("fake_streams")) is not bool:
+            fail("media.fake_streams must be a boolean")
+
+    input_config = config.get("input")
+    if template_id in {"linux-firefox-interaction-glx-v1", "linux-firefox-privacy-storage-glx-v1"} and input_config is None:
+        fail("interaction preset requires input")
+    if input_config is not None:
+        if not isinstance(input_config, Mapping):
+            fail("input must be an object")
+        if input_config.get("pointer") not in ("fine", "coarse", "none"):
+            fail("input.pointer must be fine, coarse or none")
+        if type(input_config.get("hover")) is not bool:
+            fail("input.hover must be a boolean")
+        if type(input_config.get("max_touch_points")) is not int or input_config.get("max_touch_points") < 0:
+            fail("input.max_touch_points must be a non-negative integer")
+        if "wheel" in input_config and type(input_config.get("wheel")) is not bool:
+            fail("input.wheel must be a boolean")
+        if "keyboard" in input_config and type(input_config.get("keyboard")) is not bool:
+            fail("input.keyboard must be a boolean")
+
+    privacy = config.get("privacy")
+    if template_id == "linux-firefox-privacy-storage-glx-v1" and privacy is None:
+        fail("privacy preset requires privacy")
+    if privacy is not None:
+        if not isinstance(privacy, Mapping):
+            fail("privacy must be an object")
+        dnt = privacy.get("do_not_track")
+        if type(dnt) is bool:
+            pass
+        elif dnt in (0, 1, "1", "unspecified"):
+            pass
+        else:
+            fail("privacy.do_not_track is invalid")
+        if type(privacy.get("global_privacy_control")) is not bool:
+            fail("privacy.global_privacy_control must be a boolean")
+        if "tracking_protection" in privacy and type(privacy.get("tracking_protection")) is not bool:
+            fail("privacy.tracking_protection must be a boolean")
+        if "cookie_policy" in privacy:
+            cookie_policy = privacy.get("cookie_policy")
+            valid_policies = {"all", "block_third_party", "block_cross_site_tracking", "block_all_cross_site", 0, 1, 4, 5}
+            try:
+                if cookie_policy not in valid_policies:
+                    fail("privacy.cookie_policy is invalid")
+            except TypeError:
+                fail("privacy.cookie_policy is invalid")
+
+    storage = config.get("storage")
+    if template_id == "linux-firefox-privacy-storage-glx-v1" and storage is None:
+        fail("storage preset requires storage")
+    if storage is not None:
+        if not isinstance(storage, Mapping):
+            fail("storage must be an object")
+        for name in ("local_storage", "session_storage", "indexed_db", "caches"):
+            if type(storage.get(name)) is not bool:
+                fail(f"storage.{name} must be a boolean")
+
+    network = config.get("network")
+    if template_id == "linux-firefox-privacy-storage-glx-v1" and network is None:
+        fail("network preset requires network")
+    if network is not None:
+        if not isinstance(network, Mapping):
+            fail("network must be an object")
+        if type(network.get("online")) is not bool:
+            fail("network.online must be a boolean")
+        if "proxy" in network:
+            proxy = network.get("proxy")
+            if not isinstance(proxy, Mapping):
+                fail("network.proxy must be an object")
+            if proxy.get("type") not in ("direct", "manual"):
+                fail("network.proxy.type must be direct or manual")
+            if proxy.get("type") == "manual":
+                if not isinstance(proxy.get("host"), str) or not proxy.get("host"):
+                    fail("manual proxy requires a non-empty host")
+                if not integer(proxy.get("port"), 65535):
+                    fail("manual proxy requires a valid port from 1 to 65535")
+        if "shaping" in network:
+            shaping = network.get("shaping")
+            if not isinstance(shaping, Mapping):
+                fail("network.shaping must be an object")
+            if shaping.get("mode") not in ("disabled", "unsupported", "simulated", "kernel"):
+                fail("network.shaping.mode must be disabled, unsupported, simulated or kernel")
+            if "latency_ms" in shaping and (type(shaping.get("latency_ms")) is not int or shaping.get("latency_ms") < 0):
+                fail("network.shaping.latency_ms must be a non-negative integer")
+            if "packet_loss_rate" in shaping and (not isinstance(shaping.get("packet_loss_rate"), (int, float)) or not (0.0 <= shaping.get("packet_loss_rate") <= 1.0)):
+                fail("network.shaping.packet_loss_rate must be a float between 0.0 and 1.0")
 
 
 def _matches_template(template: "PersonaTemplate", config: Mapping[str, Any],

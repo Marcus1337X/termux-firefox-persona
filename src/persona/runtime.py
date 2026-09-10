@@ -8,6 +8,7 @@ from contextlib import ExitStack
 import hmac
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import secrets
@@ -78,6 +79,57 @@ def firefox_settings(config: dict) -> tuple[dict, dict]:
             prefs["font.name-list.emoji"] = fonts["aliases"]["emoji"]
     if config.get("audio"):
         prefs["media.cubeb.force_sample_rate"] = config["audio"]["sample_rate"]
+    if config.get("privacy"):
+        privacy = config["privacy"]
+        if privacy.get("do_not_track") in (True, "1"):
+            prefs["privacy.donottrackheader.enabled"] = True
+            prefs["privacy.donottrackheader.value"] = 1
+        elif privacy.get("do_not_track") in (False, "unspecified"):
+            prefs["privacy.donottrackheader.enabled"] = False
+        if privacy.get("global_privacy_control") is True:
+            prefs["privacy.globalprivacycontrol.enabled"] = True
+            prefs["privacy.globalprivacycontrol.functionality.enabled"] = True
+        elif privacy.get("global_privacy_control") is False:
+            prefs["privacy.globalprivacycontrol.enabled"] = False
+            prefs["privacy.globalprivacycontrol.functionality.enabled"] = False
+        if "tracking_protection" in privacy:
+            prefs["privacy.trackingprotection.enabled"] = bool(privacy["tracking_protection"])
+            prefs["privacy.trackingprotection.socialtracking.enabled"] = bool(privacy["tracking_protection"])
+        if "cookie_policy" in privacy:
+            policy_map = {
+                "all": 0,
+                "block_third_party": 1,
+                "block_cross_site_tracking": 4,
+                "block_all_cross_site": 5,
+            }
+            val = privacy["cookie_policy"]
+            prefs["network.cookie.cookieBehavior"] = policy_map.get(val, val if isinstance(val, int) else 0)
+    if config.get("network", {}).get("proxy"):
+        proxy = config["network"]["proxy"]
+        if proxy.get("type") == "direct":
+            prefs["network.proxy.type"] = 0
+        elif proxy.get("type") == "manual":
+            prefs["network.proxy.type"] = 1
+            host = proxy.get("host")
+            port = proxy.get("port")
+            prefs["network.proxy.http"] = host
+            prefs["network.proxy.http_port"] = port
+            prefs["network.proxy.ssl"] = host
+            prefs["network.proxy.ssl_port"] = port
+            if proxy.get("socks"):
+                prefs["network.proxy.socks"] = host
+                prefs["network.proxy.socks_port"] = port
+                prefs["network.proxy.socks_version"] = 5
+                prefs["network.proxy.socks_remote_dns"] = True
+    if config.get("media"):
+        media = config["media"]
+        if media.get("webrtc") == "disabled":
+            prefs["media.peerconnection.enabled"] = False
+        elif media.get("webrtc") in ("supported", "not_verified"):
+            prefs["media.peerconnection.enabled"] = True
+        fake_media = bool(media.get("fake_streams"))
+        prefs["media.navigator.streams.fake"] = fake_media
+        prefs["media.navigator.permission.disabled"] = fake_media
     return prefs, env
 
 
@@ -95,6 +147,27 @@ async def apply_browser_overrides(bidi, config: dict) -> dict:
     return applied
 
 
+class NetworkShaper:
+    """Application-layer network delay and packet loss simulation for non-root environments."""
+    def __init__(self, config: dict | None = None):
+        network = (config or {}).get("network", {})
+        self.shaping = network.get("shaping", {})
+        self.mode = self.shaping.get("mode", "disabled")
+        self.latency_ms = int(self.shaping.get("latency_ms", 0))
+        self.packet_loss_rate = float(self.shaping.get("packet_loss_rate", 0.0))
+
+    async def simulate_packet(self, size_bytes: int = 1024) -> dict:
+        import random
+        if self.mode != "simulated":
+            return {"simulated": False, "success": True}
+        if self.latency_ms > 0:
+            await asyncio.sleep(self.latency_ms / 1000.0)
+        dropped = (self.packet_loss_rate > 0.0 and random.random() < self.packet_loss_rate)
+        if dropped:
+            return {"simulated": True, "success": False, "error": "Packet dropped by simulated network shaping"}
+        return {"simulated": True, "success": True, "latency_ms": self.latency_ms}
+
+
 class PersonaRuntime:
     def __init__(self, manager: PersonaManager, persona_id: str, instance_id: str):
         self.manager = manager
@@ -104,6 +177,7 @@ class PersonaRuntime:
         if self.state.get("instance_id") != instance_id:
             raise RuntimeError("Stale worker startup request")
         self.instance_id = instance_id
+        self.shaper = NetworkShaper(self.persona.final_config)
         self.pilot = None
         self.bidi = None
         self.legacy = None
@@ -373,6 +447,65 @@ class PersonaRuntime:
                 logger.warning("Could not release pointer actions after failed click", exc_info=True)
         return {"method": "bidi", "x": x, "y": y, "button": button, "count": count, "context": context}
 
+    async def _native_wheel(self, params: dict):
+        context = params.get("context") or self.context
+        if not context:
+            raise ValueError("No active context")
+        x = float(params.get("x", 0))
+        y = float(params.get("y", 0))
+        delta_x = float(params.get("delta_x", 0))
+        delta_y = float(params.get("delta_y", 0))
+        for name, value in (("x", x), ("y", y)):
+            if type(value) not in (int, float) or not 0 <= value <= 2147483647 or not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite, non-negative viewport coordinate")
+        for name, value in (("delta_x", delta_x), ("delta_y", delta_y)):
+            if type(value) not in (int, float) or not math.isfinite(value) or abs(value) > 100000:
+                raise ValueError(f"{name} must be a finite delta coordinate")
+        actions = [{
+            "type": "wheel",
+            "id": "persona-native-wheel",
+            "actions": [{
+                "type": "scroll",
+                "x": math.floor(x),
+                "y": math.floor(y),
+                "deltaX": math.floor(delta_x),
+                "deltaY": math.floor(delta_y),
+                "duration": 0,
+            }],
+        }]
+        await self.bidi.send("input.performActions", {"context": context, "actions": actions})
+        return {"method": "bidi", "x": x, "y": y, "delta_x": delta_x, "delta_y": delta_y, "context": context}
+
+    async def _native_key(self, params: dict):
+        context = params.get("context") or self.context
+        if not context:
+            raise ValueError("No active context")
+        text = params.get("text")
+        keys = params.get("keys")
+        if text is None and keys is None:
+            raise ValueError("Provide either text or keys")
+        actions = []
+        if text is not None:
+            if not isinstance(text, str):
+                raise ValueError("text must be a string")
+            for char in text:
+                actions.append({"type": "keyDown", "value": char})
+                actions.append({"type": "keyUp", "value": char})
+        elif keys is not None:
+            if isinstance(keys, str):
+                keys = [keys]
+            if not isinstance(keys, (list, tuple)):
+                raise ValueError("keys must be a list of key strings")
+            for k in keys:
+                actions.append({"type": "keyDown", "value": str(k)})
+            for k in reversed(keys):
+                actions.append({"type": "keyUp", "value": str(k)})
+        await self.bidi.send("input.performActions", {
+            "context": context,
+            "actions": [{"type": "key", "id": "persona-native-keyboard", "actions": actions}],
+        })
+        return {"method": "bidi", "text": text, "keys": keys, "context": context}
+
     async def dispatch(self, action: str, params: dict):
         if self.state.get("mode") == "requalify" and action not in {"status", "probe", "shutdown"}:
             raise ValueError("Validation workers only accept status, probe and shutdown")
@@ -388,9 +521,15 @@ class PersonaRuntime:
             # Let the current response reach the socket before cleanup.
             asyncio.get_running_loop().call_later(0.1, self.stop_event.set)
             return {"stopping": True}
+        if action == "simulate_network_packet":
+            return await self.shaper.simulate_packet(params.get("size_bytes", 1024))
         await self.select_context(params.get("context"))
         if action == "click_native":
             return await self._native_click(params)
+        if action in ("wheel", "wheel_scroll", "scroll"):
+            return await self._native_wheel(params)
+        if action in ("key", "key_input", "type"):
+            return await self._native_key(params)
         if action == "goto":
             url = params.get("url", "")
             if not isinstance(url, str) or not url.startswith(("http://", "https://", "about:blank")):
@@ -433,6 +572,21 @@ class PersonaRuntime:
             finally:
                 await self.bidi.send("browsingContext.close", {"context": probe_context})
                 await self.select_context(original)
+        if action == "cookies_get":
+            try:
+                return await self.bidi.send("storage.getCookies", params or {})
+            except Exception:
+                return {"cookie": await self.bidi.evaluate(self.context, "document.cookie")}
+        if action == "cookies_clear":
+            try:
+                return await self.bidi.send("storage.deleteCookies", params or {})
+            except Exception:
+                js = "(function() { document.cookie.split(';').forEach(c => { document.cookie = c.replace(/^ +/, '').replace(/=.*/, '=;expires=' + new Date().toUTCString() + ';path=/'); }); return true; })()"
+                return {"cleared": await self.bidi.evaluate(self.context, js)}
+        if action == "fullscreen":
+            enabled = bool(params.get("enabled", True))
+            js = f"(function() {{ if ({str(enabled).lower()}) {{ if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen(); }} else {{ if (document.exitFullscreen) document.exitFullscreen(); }} return document.fullscreenElement !== null; }})()"
+            return {"fullscreen": await self.bidi.evaluate(self.context, js)}
         if action in {"useragent_set", "useragent_clear", "geo_set", "geo_clear", "headers_set"}:
             raise ValueError("Persona identity is immutable; create a new Persona to change it")
         response = await self.legacy._dispatch({"id": 1, "action": action, "params": params})

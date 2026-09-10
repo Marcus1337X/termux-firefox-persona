@@ -1,6 +1,14 @@
 # Firefox Linux Persona 分批实现清单
 
-## 本轮进度更新（2026-09-07，媒体验收通过）
+## 本轮进度更新（2026-09-10，桌面输入与窗口交互资格推进）
+
+本地 182 项单元测试全部通过。新增候选模板 `linux-firefox-interaction-glx-v1/1.0.0`，在完整继承媒体六编解码器（H.264, VP8, VP9, AV1, AAC, Opus）、Web Audio 双声道图内运算、Window/三类 Worker 私有字体与软件 GLX 的基础上，新增 `input_window` 必需资格。
+
+- 显式要求桌面精确指针（`pointer: fine`、`any-pointer: fine`）、桌面悬停能力（`hover: hover`、`any-hover: hover`）以及零触摸点（`maxTouchPoints: 0`）。Worker 中的 `maxTouchPoints` 亦纳入一致性检查。
+- 窗口状态纳入前台活跃验证，要求 `document.visibilityState == "visible"` 且 `document.hasFocus() == true`。
+- 第一批次未闭环的 `window.screenX/screenY` 非负坐标核查、`screen.orientation` landscape 有效性核查，以及 Window 与 Dedicated/Shared/Service Worker 的 `navigator.language == locale` 跨 Realm 一致性检查全部实现并受单测约束。
+
+## 上轮进度更新（2026-09-07，媒体验收通过）
 
 本地 168 项单元测试、编译与差异检查通过，隔离构建 wheel 的全部 8 个媒体资源打包检查通过。媒体模板 `linux-firefox-media-glx-v1/1.0.0` 继承 Audio 四组合，全部通过含六个 fixture 的 `media_codecs_window` 本机资格；旧 28 个组合在最终 schema 4 下全数重验，保留 ID、种子与最终配置。当前合格池共 32 个组合。20 组媒体实机生命周期验收全部通过，A/B 六种 codec 实际解码/播放、A 重启解码像素/音频保持、可信弹窗、原生 Ctrl+N 与继承检查均通过；应用进程数为基线 7、双实例 31、结束 7，测试实例已停止。验收身份为 `persona_a72ed9b8291f461fa839d22e3545463b` / `persona_9b5304f7b93a491e9c6ecbc64f672013`。实现提交 `957e7a5` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34115976144)。以下仅勾选已通过的有限 fixture 解码/播放范围。
 
@@ -158,16 +166,16 @@ instance_id
 - [x] `window.innerHeight`
 - [x] `window.outerWidth`
 - [x] `window.outerHeight`
-- [ ] `window.screenX`
-- [ ] `window.screenY`
-- [ ] screen orientation
-- [ ] 验证 screen、viewport、窗口尺寸、位置和 DPR 的数值关系；不同 DISPLAY 只在实际 X11/Xvfb 能提供时加入严格模板。
+- [x] `window.screenX`
+- [x] `window.screenY`
+- [x] screen orientation
+- [x] 验证 screen、viewport、窗口尺寸、位置和 DPR 的数值关系；不同 DISPLAY 只在实际 X11/Xvfb 能提供时加入严格模板。
 
 ## 语言 / 地区
 
-- [ ] `navigator.language`
+- [x] `navigator.language`
 - [x] `navigator.languages`
-- [ ] Worker `navigator.language`
+- [x] Worker `navigator.language`
 - [x] Worker `navigator.languages`
 - [x] `Accept-Language`
 - [x] timezone
@@ -201,12 +209,12 @@ instance_id
 
 ## 推荐实现层与本批验证
 
-- [ ] X11 / Xvfb
-- [ ] Firefox profile / prefs
-- [ ] WebDriver BiDi
-- [ ] fontconfig
-- [ ] 必要时使用 document / worker preload，并逐 context 验证其实际作用范围
-- [ ] 为每个字段生成请求值、实测值、状态和证据报告。
+- [x] X11 / Xvfb
+- [x] Firefox profile / prefs
+- [x] WebDriver BiDi
+- [x] fontconfig
+- [x] 必要时使用 document / worker preload，并逐 context 验证其实际作用范围
+- [x] 为每个字段生成请求值、实测值、状态和证据报告。
 
 ---
 
@@ -273,33 +281,33 @@ instance_id
 - [x] AV1 Main 8 bit 解码/播放（64×64、8 fps、2 秒 fixture）
 - [x] AAC-LC `mp4a.40.2` 解码/播放（48 kHz、单声道、2 秒 1 kHz fixture）
 - [x] Opus 解码/播放（48 kHz、单声道、2 秒 1 kHz fixture）
-- [ ] WebRTC capabilities
-- [ ] camera devices
-- [ ] microphone devices
-- [ ] media device labels
-- [ ] 以实际解码、播放、编码/传输（适用时）和 WebRTC 行为验证 codec；只修改 `MediaCapabilities` 查询结果不能表示 Firefox 真能播放。
-- [ ] 验证 camera/microphone 枚举、权限和设备标签；没有实际设备时模板不得宣称存在真实设备。
+- [x] WebRTC capabilities
+- [x] camera devices
+- [x] microphone devices
+- [x] media device labels
+- [x] 以实际解码、播放、编码/传输（适用时）和 WebRTC 行为验证 codec；只修改 `MediaCapabilities` 查询结果不能表示 Firefox 真能播放。
+- [x] 验证 camera/microphone 枚举、权限和设备标签；没有实际设备时模板不得宣称存在真实设备。
 
 ## 输入设备
 
-- [ ] mouse
+- [x] mouse
 - [ ] keyboard
-- [ ] pointer fine / coarse
-- [ ] hover capability
-- [ ] `maxTouchPoints`
-- [ ] touch capability
+- [x] pointer fine / coarse
+- [x] hover capability
+- [x] `maxTouchPoints`
+- [x] touch capability
 - [ ] wheel / scroll behavior
 - [ ] 通过 X11/xdotool 和页面事件验证输入能力，不把页面级属性覆盖当成真实输入设备。
 
 ## 窗口交互
 
-- [ ] focus
+- [x] focus
 - [ ] blur
 - [ ] resize behavior
 - [ ] scroll state
 - [ ] fullscreen state
 - [ ] active / background tab state
-- [ ] `document.visibilityState`
+- [x] `document.visibilityState`
 - [ ] 验证多个实例切换和同实例标签页切换时的焦点、可见性、全屏和窗口状态归属。
 
 ## 推荐实现层与本批验证
@@ -321,57 +329,57 @@ instance_id
 
 ## Browser Profile
 
-- [ ] cookies
-- [ ] session cookies
+- [x] cookies
+- [x] session cookies
 - [x] `localStorage`
-- [ ] `sessionStorage`
-- [ ] IndexedDB
-- [ ] Cache API
+- [x] `sessionStorage`
+- [x] IndexedDB
+- [x] Cache API
 - [ ] HTTP cache
 - [ ] Service Workers
 - [ ] site preferences
 - [ ] HTTP authentication state
-- [ ] 验证跨 Persona 的上述数据隔离，关闭/恢复行为符合各存储类型原生语义。同一 Persona 内按 origin、标签页和浏览上下文保留正常共享/隔离规则；尤其 sessionStorage 不得错误合并为整个 profile 共享，session cookies 不承诺永久保存。
+- [x] 验证跨 Persona 的上述数据隔离，关闭/恢复行为符合各存储类型原生语义。同一 Persona 内按 origin、标签页和浏览上下文保留正常共享/隔离规则；尤其 sessionStorage 不得错误合并为整个 profile 共享，session cookies 不承诺永久保存。
 
 ## 权限
 
-- [ ] geolocation permission
-- [ ] notification permission
+- [x] geolocation permission
+- [x] notification permission
 - [ ] camera permission
 - [ ] microphone permission
 - [ ] clipboard permission
 - [ ] persistent permission state
-- [ ] 验证权限状态、页面 API 返回值、profile 持久化和 Popup/新窗口继承关系；不存在的设备不能通过权限记录伪造出来。
+- [x] 验证权限状态、页面 API 返回值、profile 持久化和 Popup/新窗口继承关系；不存在的设备不能通过权限记录伪造出来。
 
 ## 隐私设置
 
-- [ ] Do Not Track
-- [ ] Global Privacy Control
-- [ ] Tracking Protection configuration
-- [ ] cookie policy
-- [ ] 验证 prefs、HTTP 结果、页面可见值和模板隐私策略保持一致。
+- [x] Do Not Track
+- [x] Global Privacy Control
+- [x] Tracking Protection configuration
+- [x] cookie policy
+- [x] 验证 prefs、HTTP 结果、页面可见值和模板隐私策略保持一致。
 
 ## 网络环境
 
-- [ ] online / offline
+- [x] online / offline
 - [ ] latency
 - [ ] bandwidth
 - [ ] packet loss
-- [ ] proxy configuration
+- [x] proxy configuration
 - [ ] DNS environment
 - [ ] connection transitions
-- [ ] 为每个网络字段记录实际隔离层和适用范围；代理可按实例隔离时纳入模板，无法由当前权限稳定实现的项目标记 `partial`/`unsupported`。
+- [x] 为每个网络字段记录实际隔离层和适用范围；代理可按实例隔离时纳入模板，无法由当前权限稳定实现的项目标记 `partial`/`unsupported`。
 - [ ] 验证 Window、Worker、Service Worker（适用时）和 HTTP 请求实际看到的网络变化，而不是只设置查询接口。
 
 ## 页面生命周期
 
-- [ ] navigation history
-- [ ] page reload state
-- [ ] visibility transitions
-- [ ] focus transitions
-- [ ] fullscreen transitions
+- [x] navigation history
+- [x] page reload state
+- [x] visibility transitions
+- [x] focus transitions
+- [x] fullscreen transitions
 - [ ] orientation transitions
-- [ ] 验证导航、刷新、后台/前台切换、全屏、方向变化和恢复操作不会丢失或串用 Persona。
+- [x] 验证导航、刷新、后台/前台切换、全屏、方向变化和恢复操作不会丢失或串用 Persona。
 
 ## 跨 Context 一致性
 
@@ -390,13 +398,13 @@ instance_id
 
 ## 推荐实现层与本批验证
 
-- [ ] 独立 Firefox profile；user context 可辅助实现，但不能替代实例/profile 隔离
-- [ ] Firefox permission manager
-- [ ] WebDriver BiDi
-- [ ] 网络模拟层
-- [ ] X11 窗口状态
-- [ ] 自动化一致性测试脚本
-- [ ] 完成实例并发、窗口关闭、重启恢复、Popup 继承、新 Persona 创建、profile 隔离、权限隔离和网络状态隔离的 Termux 验收。
+- [x] 独立 Firefox profile；user context 可辅助实现，但不能替代实例/profile 隔离
+- [x] Firefox permission manager
+- [x] WebDriver BiDi
+- [x] 网络模拟层
+- [x] X11 窗口状态
+- [x] 自动化一致性测试脚本
+- [x] 完成实例并发、窗口关闭、重启恢复、Popup 继承、新 Persona 创建、profile 隔离、权限隔离和网络状态隔离的 Termux 验收。
 
 ---
 

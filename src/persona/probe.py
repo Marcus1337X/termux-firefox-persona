@@ -33,13 +33,26 @@ function tbpWorkerValues(kind) {
   let timezone = null;
   try { timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || null; }
   catch (_) {}
+  let touch = null;
+  try { touch = navigator.maxTouchPoints !== undefined ? navigator.maxTouchPoints : null; }
+  catch (_) {}
+  let gpc = null;
+  try { gpc = navigator.globalPrivacyControl !== undefined ? navigator.globalPrivacyControl : null; }
+  catch (_) {}
+  let onLine = null;
+  try { onLine = navigator.onLine !== undefined ? navigator.onLine : null; }
+  catch (_) {}
   return {
     kind: kind,
     userAgent: navigator.userAgent || null,
     platform: navigator.platform || null,
     hardwareConcurrency: navigator.hardwareConcurrency || null,
     languages: Array.from(navigator.languages || []),
-    timezone: timezone
+    language: navigator.language || (navigator.languages && navigator.languages[0]) || null,
+    maxTouchPoints: touch,
+    timezone: timezone,
+    globalPrivacyControl: gpc,
+    onLine: onLine
   };
 }
 '''
@@ -337,8 +350,22 @@ PROBE_HTML = r'''<!doctype html>
     return {
       pointer: matches('(pointer: fine)') ? 'fine' :
                (matches('(pointer: coarse)') ? 'coarse' : 'none'),
+      anyPointer: matches('(any-pointer: fine)') ? 'fine' :
+                  (matches('(any-pointer: coarse)') ? 'coarse' : 'none'),
       hover: matches('(hover: hover)'),
-      maxTouchPoints: navigator.maxTouchPoints || 0
+      anyHover: matches('(any-hover: hover)'),
+      maxTouchPoints: navigator.maxTouchPoints || 0,
+      wheel: 'onwheel' in window || 'WheelEvent' in window,
+      keyboard: 'KeyboardEvent' in window
+    };
+  }
+  function interactionValues() {
+    return {
+      visibilityState: document.visibilityState || 'visible',
+      hidden: document.hidden === true,
+      hasFocus: typeof document.hasFocus === 'function' ? document.hasFocus() : true,
+      scrollX: typeof window.scrollX === 'number' ? window.scrollX : 0,
+      scrollY: typeof window.scrollY === 'number' ? window.scrollY : 0
     };
   }
 __TBP_WEBGL_SOURCE__
@@ -374,11 +401,98 @@ __TBP_WEBGL_SOURCE__
     }
     return out;
   }
+  function privacyValues() {
+    let dnt = null;
+    try { dnt = navigator.doNotTrack !== undefined ? navigator.doNotTrack : null; }
+    catch (_) {}
+    let gpc = null;
+    try { gpc = navigator.globalPrivacyControl !== undefined ? navigator.globalPrivacyControl : null; }
+    catch (_) {}
+    return {
+      doNotTrack: dnt,
+      globalPrivacyControl: gpc
+    };
+  }
+  function storageValues() {
+    let localOk = false;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const k = '__tbp_ls_test__';
+        localStorage.setItem(k, '1');
+        localOk = localStorage.getItem(k) === '1';
+        localStorage.removeItem(k);
+      }
+    } catch (_) {}
+    let sessionOk = false;
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        const k = '__tbp_ss_test__';
+        sessionStorage.setItem(k, '1');
+        sessionOk = sessionStorage.getItem(k) === '1';
+        sessionStorage.removeItem(k);
+      }
+    } catch (_) {}
+    return {
+      localStorage: localOk,
+      sessionStorage: sessionOk,
+      indexedDB: typeof indexedDB !== 'undefined' && indexedDB !== null,
+      caches: typeof caches !== 'undefined' && caches !== null
+    };
+  }
+  function networkValues() {
+    return {
+      onLine: typeof navigator.onLine === 'boolean' ? navigator.onLine : true
+    };
+  }
+  function webrtcValues() {
+    const pcClass = window.RTCPeerConnection || window.webkitRTCPeerConnection;
+    const out = {supported: !!pcClass, dataChannel: false, error: null};
+    if (pcClass) {
+      try {
+        const pc = new pcClass();
+        if (typeof pc.createDataChannel === 'function') {
+          const dc = pc.createDataChannel('tbp-test');
+          out.dataChannel = !!dc;
+          if (dc && dc.close) dc.close();
+        }
+        if (pc.close) pc.close();
+      } catch (e) {
+        out.error = String(e);
+      }
+    }
+    return out;
+  }
   const probe = window.__tbpProbe = {
     window: windowValues(), display: displayValues(), appearance: appearanceValues(),
-    input: inputValues(), webgl: webglValues(), canvas: canvasValues(),
-    audio: audioValues(), workers: {}
+    input: inputValues(), interaction: interactionValues(), privacy: privacyValues(),
+    storage: storageValues(), network: networkValues(), webgl: webglValues(), canvas: canvasValues(),
+    audio: audioValues(), webrtc: webrtcValues(), mediaDevices: {
+      supported: !!(navigator.mediaDevices && navigator.mediaDevices.enumerateDevices),
+      complete: false, devices: [], audioInputs: 0, audioOutputs: 0, videoInputs: 0, labelsExposed: false
+    }, workers: {}
   };
+  if (probe.mediaDevices.supported) {
+    try {
+      navigator.mediaDevices.enumerateDevices().then(function(devs) {
+        probe.mediaDevices.complete = true;
+        probe.mediaDevices.audioInputs = devs.filter(function(d) { return d.kind === 'audioinput'; }).length;
+        probe.mediaDevices.audioOutputs = devs.filter(function(d) { return d.kind === 'audiooutput'; }).length;
+        probe.mediaDevices.videoInputs = devs.filter(function(d) { return d.kind === 'videoinput'; }).length;
+        probe.mediaDevices.labelsExposed = devs.some(function(d) { return !!d.label; });
+        probe.mediaDevices.devices = devs.map(function(d) {
+          return {kind: d.kind, deviceId: d.deviceId ? 'present' : '', groupId: d.groupId ? 'present' : '', label: d.label || ''};
+        });
+      }).catch(function(e) {
+        probe.mediaDevices.complete = true;
+        probe.mediaDevices.error = String(e);
+      });
+    } catch (e) {
+      probe.mediaDevices.complete = true;
+      probe.mediaDevices.error = String(e);
+    }
+  } else {
+    probe.mediaDevices.complete = true;
+  }
   let dedicated = null;
   let shared = null;
   let serviceRegistration = null;
@@ -746,14 +860,21 @@ class ProbeRunner:
                 pass
             server.close()
 
-    async def _permission_state(self, context: str, timeout: float) -> Any:
+    async def _permission_state(self, context: str, timeout: float, name: str = "geolocation") -> Any:
+        escaped = name.replace("'", "\\'")
         return await self.client.evaluate(
             context,
-            "navigator.permissions && navigator.permissions.query "
-            "? navigator.permissions.query({name: 'geolocation'}).then(p => p.state) "
-            ": 'unsupported'",
+            f"navigator.permissions && navigator.permissions.query "
+            f"? navigator.permissions.query({{name: '{escaped}'}}).then(p => p.state).catch(() => 'error') "
+            f": 'unsupported'",
             timeout=timeout,
         )
+
+    async def _query_permissions(self, context: str, timeout: float) -> dict[str, Any]:
+        results = {}
+        for name in ("geolocation", "notifications"):
+            results[name] = await self._permission_state(context, timeout, name=name)
+        return results
 
     async def _set_geolocation_permission(
         self,
@@ -1171,6 +1292,16 @@ class ProbeRunner:
         add("webgl", "pass" if webgl.get("supported") and not webgl.get("contextCreationError") else "partial")
         add("canvas", "pass" if (page.get("canvas") or {}).get("supported") else "partial")
         add("audio", "pass" if (page.get("audio") or {}).get("supported") else "partial")
+        privacy = page.get("privacy") or {}
+        add("privacy", "pass" if isinstance(privacy, Mapping) else "partial")
+        storage = page.get("storage") or {}
+        add("storage", "pass" if isinstance(storage, Mapping) and storage.get("localStorage") and storage.get("sessionStorage") else "partial")
+        network = page.get("network") or {}
+        add("network", "pass" if isinstance(network, Mapping) and network.get("onLine") is True else "partial")
+        media_dev = page.get("mediaDevices") or {}
+        add("mediaDevices", "pass" if isinstance(media_dev, Mapping) and media_dev.get("supported") else "partial")
+        webrtc = page.get("webrtc") or {}
+        add("webrtc", "pass" if isinstance(webrtc, Mapping) and webrtc.get("supported") else "partial")
         return checks
 
 

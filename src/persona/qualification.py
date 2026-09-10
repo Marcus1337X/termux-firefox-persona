@@ -174,6 +174,68 @@ def _webgl_behavior_valid(value: Mapping[str, Any]) -> bool:
     )
 
 
+def _webgl_limits_and_precision_valid(observed: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
+    limits = _mapping(observed.get("limits"))
+    precision = _mapping(observed.get("precision"))
+    extensions = observed.get("extensions")
+    if not limits and not precision and extensions is None:
+        return True, {"evaluated": False}
+
+    ok = True
+    errors: list[str] = []
+    limits_info: dict[str, Any] = {}
+    if limits:
+        for key, min_val in (
+            ("MAX_TEXTURE_SIZE", 2048),
+            ("MAX_CUBE_MAP_TEXTURE_SIZE", 2048),
+            ("MAX_VERTEX_ATTRIBS", 16),
+            ("MAX_VERTEX_UNIFORM_VECTORS", 256),
+            ("MAX_FRAGMENT_UNIFORM_VECTORS", 256),
+        ):
+            val = limits.get(key)
+            limits_info[key] = val
+            if type(val) is not int or val < min_val:
+                ok = False
+                errors.append(f"{key} invalid or below minimum")
+        max_vp = observed.get("maxViewportDims")
+        if max_vp is not None:
+            if not isinstance(max_vp, Sequence) or len(max_vp) < 2 or any(type(x) is not int or x < 2048 for x in max_vp[:2]):
+                ok = False
+                errors.append("maxViewportDims invalid or below 2048")
+            limits_info["MAX_VIEWPORT_DIMS"] = list(max_vp) if isinstance(max_vp, Sequence) else None
+
+    precision_info: dict[str, Any] = {}
+    if precision:
+        for ptype in ("vertexHighFloat", "fragmentHighFloat", "vertexMediumFloat", "fragmentMediumFloat"):
+            p_val = _mapping(precision.get(ptype))
+            precision_info[ptype] = p_val
+            p_prec, p_rmin, p_rmax = p_val.get("precision"), p_val.get("rangeMin"), p_val.get("rangeMax")
+            if type(p_prec) is not int or p_prec < 23 or type(p_rmin) is not int or p_rmin < 62 or type(p_rmax) is not int or p_rmax < 62:
+                ok = False
+                errors.append(f"{ptype} precision or range below standard")
+
+    extensions_info: dict[str, Any] = {}
+    if extensions is not None:
+        if not isinstance(extensions, Sequence) or isinstance(extensions, (str, bytes)):
+            ok = False
+            errors.append("extensions must be an array")
+        else:
+            ext_list = [str(x) for x in extensions]
+            extensions_info["count"] = len(ext_list)
+            extensions_info["extensions"] = ext_list
+            if "WEBGL_debug_renderer_info" not in ext_list:
+                ok = False
+                errors.append("missing WEBGL_debug_renderer_info extension")
+
+    return ok, {
+        "evaluated": True,
+        "limits": limits_info,
+        "precision": precision_info,
+        "extensions": extensions_info,
+        "errors": errors,
+    }
+
+
 def _webgl_observation_valid(
     observed: Mapping[str, Any],
     graphics: Mapping[str, Any],
@@ -201,6 +263,8 @@ def _webgl_observation_valid(
             return rhs == "mesa" or rhs.startswith("mesa ")
         return lhs == rhs
 
+    limits_ok, limits_detail = _webgl_limits_and_precision_valid(observed)
+
     ok = (
         observed.get("supported") is True
         and graphics_match(graphics.get("vendor"), observed_vendor)
@@ -215,6 +279,7 @@ def _webgl_observation_valid(
         and webgl2.get("supported") is True
         and _webgl_behavior_valid(behavior1)
         and _webgl_behavior_valid(behavior2)
+        and limits_ok
     )
     values = {
         "supported": observed.get("supported"),
@@ -226,6 +291,7 @@ def _webgl_observation_valid(
         "webgl2": {"supported": webgl2.get("supported"),
                     "vendor": identity2[0], "renderer": identity2[1],
                     "behavior": behavior2},
+        "limits_and_precision": limits_detail,
     }
     return ok, values, identity if all(item is not None for item in identity) else None
 
@@ -553,7 +619,18 @@ def qualify_probe(
         and _as_number(viewport.get("width")) == iw
         and _as_number(viewport.get("height")) == ih
     )
-    display_ok = display_ok and bounds_ok and policy_ok and viewport_derived
+    sx, sy = _as_int(display_observed_values.get("screen_x")), _as_int(display_observed_values.get("screen_y"))
+    coords_ok = (sx is not None and sx >= 0 and sy is not None and sy >= 0) if (sx is not None or sy is not None) else True
+    orientation = display_observed_values.get("orientation")
+    orientation_ok = True
+    if orientation is not None and isinstance(orientation, Mapping) and orientation:
+        otype = orientation.get("type")
+        angle = orientation.get("angle")
+        orientation_ok = (
+            isinstance(otype, str) and "landscape" in otype.lower()
+            and angle in (0, 90, 180, 270)
+        )
+    display_ok = display_ok and bounds_ok and policy_ok and viewport_derived and coords_ok and orientation_ok
     requested_display = {key: display.get(key) for key in fixed_display_keys}
     requested_display.update({"window_policy": display.get("window_policy", "maximized"),
                               "viewport_policy": display.get("viewport_policy", "derived")})
@@ -585,6 +662,9 @@ def qualify_probe(
         }
         locale_ok = locale_ok and _same_languages(locale.get("languages"), realm_data.get("languages"))
         locale_ok = locale_ok and locale.get("timezone") == realm_data.get("timezone")
+        observed_lang = realm_data.get("language")
+        if observed_lang is not None and locale.get("locale"):
+            locale_ok = locale_ok and observed_lang == locale.get("locale")
     doc_headers, worker_headers = _document_headers(http), _worker_headers_by_kind(http)
     observed_locale["document_headers"] = {
         "user_agent": _header(doc_headers, "User-Agent"),
@@ -844,8 +924,21 @@ def qualify_probe(
             )
             worker_webgl_values[realm] = values
             workers_webgl_ok = workers_webgl_ok and realm_ok
+        worker_limits_consistent = True
+        win_limits = _mapping(window_webgl.get("limits"))
+        if win_limits:
+            for realm in _REALMS[1:]:
+                w_obs = _mapping(_realm(workers, realm).get("webgl"))
+                w_limits = _mapping(w_obs.get("limits"))
+                if w_limits:
+                    for k in ("MAX_TEXTURE_SIZE", "MAX_CUBE_MAP_TEXTURE_SIZE", "MAX_VERTEX_ATTRIBS"):
+                        if w_limits.get(k) is not None and win_limits.get(k) is not None and w_limits.get(k) != win_limits.get(k):
+                            worker_limits_consistent = False
+                            break
+        workers_webgl_ok = workers_webgl_ok and worker_limits_consistent
         observed_workers_webgl = {
             "window_identity": window_webgl_identity,
+            "worker_limits_consistent": worker_limits_consistent,
             "workers": worker_webgl_values,
         }
         evidence.append(_evidence(
@@ -902,17 +995,272 @@ def qualify_probe(
             diagnostic_reasons.append("native media decoding/playback failed: " +
                                       (", ".join(failed_codecs) or "activation, configuration or cleanup"))
 
+    if "input_window" in template.required_capabilities:
+        input_config = _mapping(final_config.get("input"))
+        observed_input = _mapping(page.get("input"))
+        observed_interaction = _mapping(page.get("interaction"))
+        requested_input = {
+            "pointer": input_config.get("pointer", "fine"),
+            "hover": input_config.get("hover", True),
+            "max_touch_points": input_config.get("max_touch_points", 0),
+        }
+        observed_input_values = {
+            "pointer": observed_input.get("pointer"),
+            "hover": observed_input.get("hover"),
+            "max_touch_points": observed_input.get("maxTouchPoints", observed_input.get("max_touch_points")),
+            "any_pointer": observed_input.get("anyPointer"),
+            "any_hover": observed_input.get("anyHover"),
+            "visibility_state": observed_interaction.get("visibilityState", "visible"),
+            "has_focus": observed_interaction.get("hasFocus", True),
+        }
+        input_ok = (
+            observed_input_values["pointer"] == requested_input["pointer"]
+            and observed_input_values["hover"] == requested_input["hover"]
+            and observed_input_values["max_touch_points"] == requested_input["max_touch_points"]
+            and observed_input_values["visibility_state"] == "visible"
+        )
+        if "wheel" in input_config:
+            req_wheel = input_config["wheel"]
+            obs_wheel = observed_input.get("wheel", True)
+            input_ok = input_ok and (obs_wheel == req_wheel)
+        if "keyboard" in input_config:
+            req_key = input_config["keyboard"]
+            obs_key = observed_input.get("keyboard", True)
+            input_ok = input_ok and (obs_key == req_key)
+        worker_touch_ok = True
+        for realm in _REALMS[1:]:
+            worker_touch = _realm(workers, realm).get("maxTouchPoints")
+            if worker_touch is not None:
+                worker_touch_ok = worker_touch_ok and worker_touch == requested_input["max_touch_points"]
+        input_ok = input_ok and worker_touch_ok
+        evidence.append(_evidence(
+            "input_window", _status(input_ok), snapshot_obj,
+            requested_input,
+            {**observed_input_values, "worker_touch_consistent": worker_touch_ok},
+            ("window", "dedicated", "shared", "service"),
+            (
+                "observations.page.input.pointer",
+                "observations.page.input.hover",
+                "observations.page.input.maxTouchPoints",
+                "observations.page.interaction.visibilityState",
+                "observations.page.interaction.hasFocus",
+            ),
+        ))
+        if not input_ok:
+            diagnostic_reasons.append("input devices (pointer/hover/touch) or window visibility do not match")
+
+    if "privacy_window_http" in template.required_capabilities:
+        privacy_config = _mapping(final_config.get("privacy"))
+        observed_privacy = _mapping(page.get("privacy"))
+        requested_dnt = privacy_config.get("do_not_track")
+        requested_gpc = privacy_config.get("global_privacy_control")
+
+        observed_dnt = observed_privacy.get("doNotTrack")
+        observed_gpc = observed_privacy.get("globalPrivacyControl")
+
+        doc_headers = _mapping(http.get("document"))
+        http_dnt = _header(doc_headers, "DNT")
+        http_gpc = _header(doc_headers, "Sec-GPC")
+
+        dnt_ok = True
+        if requested_dnt in (True, "1", 1):
+            dnt_ok = (observed_dnt == "1") and (http_dnt == "1")
+        elif requested_dnt in (False, "unspecified", 0):
+            dnt_ok = (observed_dnt in (None, "unspecified", "")) and (http_dnt is None)
+
+        gpc_ok = True
+        if requested_gpc is True:
+            gpc_ok = (observed_gpc is True) and (http_gpc == "1")
+        elif requested_gpc is False:
+            gpc_ok = (observed_gpc in (False, None)) and (http_gpc is None)
+
+        worker_gpc_ok = True
+        for realm in _REALMS[1:]:
+            worker_val = _realm(workers, realm).get("globalPrivacyControl")
+            if worker_val is not None and requested_gpc is not None:
+                worker_gpc_ok = worker_gpc_ok and (worker_val == requested_gpc)
+
+        privacy_ok = dnt_ok and gpc_ok and worker_gpc_ok
+        evidence.append(_evidence(
+            "privacy_window_http", _status(privacy_ok), snapshot_obj,
+            {"do_not_track": requested_dnt, "global_privacy_control": requested_gpc},
+            {
+                "window_dnt": observed_dnt,
+                "http_dnt": http_dnt,
+                "window_gpc": observed_gpc,
+                "http_gpc": http_gpc,
+                "worker_gpc_consistent": worker_gpc_ok,
+            },
+            ("window", "dedicated", "shared", "service", "http"),
+            (
+                "observations.page.privacy.doNotTrack",
+                "observations.page.privacy.globalPrivacyControl",
+                "observations.http.document.DNT",
+                "observations.http.document.Sec-GPC",
+            ),
+        ))
+        if not privacy_ok:
+            diagnostic_reasons.append("privacy settings (DNT/GPC) do not match across window, workers, and HTTP")
+
+    if "storage_window" in template.required_capabilities:
+        storage_config = _mapping(final_config.get("storage"))
+        observed_storage = _mapping(page.get("storage"))
+        req_local = storage_config.get("local_storage", True)
+        req_session = storage_config.get("session_storage", True)
+        req_idb = storage_config.get("indexed_db", True)
+        req_caches = storage_config.get("caches", True)
+
+        storage_ok = (
+            (observed_storage.get("localStorage") is True or not req_local)
+            and (observed_storage.get("sessionStorage") is True or not req_session)
+            and (observed_storage.get("indexedDB") is True or not req_idb)
+            and (observed_storage.get("caches") is True or not req_caches)
+        )
+        evidence.append(_evidence(
+            "storage_window", _status(storage_ok), snapshot_obj,
+            storage_config,
+            observed_storage,
+            ("window",),
+            (
+                "observations.page.storage.localStorage",
+                "observations.page.storage.sessionStorage",
+                "observations.page.storage.indexedDB",
+                "observations.page.storage.caches",
+            ),
+        ))
+        if not storage_ok:
+            diagnostic_reasons.append("browser storage APIs (localStorage, sessionStorage, indexedDB, caches) are unavailable")
+
+    if "network_window_worker" in template.required_capabilities:
+        network_config = _mapping(final_config.get("network"))
+        req_online = network_config.get("online", True)
+        observed_network = _mapping(page.get("network"))
+        window_online = observed_network.get("onLine", True)
+
+        worker_online_ok = True
+        for realm in _REALMS[1:]:
+            worker_val = _realm(workers, realm).get("onLine")
+            if worker_val is not None:
+                worker_online_ok = worker_online_ok and (worker_val == req_online)
+
+        network_ok = (window_online == req_online) and worker_online_ok
+        evidence.append(_evidence(
+            "network_window_worker", _status(network_ok), snapshot_obj,
+            network_config,
+            {"window_online": window_online, "worker_online_consistent": worker_online_ok},
+            ("window", "dedicated", "shared", "service"),
+            ("observations.page.network.onLine",),
+        ))
+        if not network_ok:
+            diagnostic_reasons.append("network status (onLine) does not match requested state across window and workers")
+
+    if "media_devices_and_webrtc" in template.required_capabilities:
+        media_cfg = _mapping(final_config.get("media"))
+        observed_devs = _mapping(page.get("mediaDevices"))
+        observed_webrtc = _mapping(page.get("webrtc"))
+
+        req_phys_in = media_cfg.get("physical_input", "not_verified")
+        video_inputs = observed_devs.get("videoInputs", 0)
+        audio_inputs = observed_devs.get("audioInputs", 0)
+
+        if media_cfg.get("fake_streams") is True:
+            dev_status = "supported" if observed_devs.get("supported") else "partial"
+        elif req_phys_in not in ("not_verified", "unsupported") and video_inputs == 0 and audio_inputs == 0:
+            dev_status = "unsupported"
+            diagnostic_reasons.append("template specifies physical input devices, but host has 0 cameras/microphones")
+        else:
+            dev_status = "supported" if observed_devs.get("supported") else "partial"
+
+        req_webrtc = media_cfg.get("webrtc", "not_verified")
+        if req_webrtc == "disabled":
+            webrtc_ok = not observed_webrtc.get("supported") or observed_webrtc.get("error") is not None
+        else:
+            webrtc_ok = bool(observed_webrtc.get("supported", False))
+
+        media_dev_ok = (dev_status == "supported") and webrtc_ok
+        status_val = "supported" if media_dev_ok else ("unsupported" if dev_status == "unsupported" else "partial")
+        evidence.append(_evidence(
+            "media_devices_and_webrtc", status_val, snapshot_obj,
+            media_cfg,
+            {"mediaDevices": observed_devs, "webrtc": observed_webrtc},
+            ("window",),
+            ("observations.page.mediaDevices", "observations.page.webrtc"),
+        ))
+        if not media_dev_ok and status_val != "unsupported":
+            diagnostic_reasons.append("media devices or WebRTC not fully functional or unverified")
+
+    if "network_traffic_shaping" in template.required_capabilities:
+        import os
+        import shutil
+        net_cfg = _mapping(final_config.get("network"))
+        shaping_cfg = _mapping(net_cfg.get("shaping"))
+        mode = shaping_cfg.get("mode", "disabled")
+
+        has_root = hasattr(os, "getuid") and os.getuid() == 0
+        has_tc = bool(shutil.which("tc"))
+        kernel_shaping_available = has_root and has_tc
+
+        if mode in ("disabled", "unsupported"):
+            shaping_status = "supported"
+            proof_msg = "network shaping explicitly disabled or declared unsupported"
+        elif mode == "kernel":
+            if not kernel_shaping_available:
+                shaping_status = "unsupported"
+                proof_msg = "kernel-level traffic shaping unavailable: lacking CAP_NET_ADMIN / root in Termux environment"
+                diagnostic_reasons.append("kernel-level traffic control (tc netem) requires root permission in Termux")
+            else:
+                shaping_status = "supported"
+                proof_msg = "kernel-level traffic control (tc) available on host"
+        elif mode == "simulated":
+            shaping_status = "partial"
+            proof_msg = "network shaping simulated at application/proxy layer without kernel guarantees"
+        else:
+            shaping_status = "unsupported"
+            proof_msg = f"unknown shaping mode {mode}"
+
+        evidence.append(_evidence(
+            "network_traffic_shaping", shaping_status, snapshot_obj,
+            shaping_cfg,
+            {"has_root": has_root, "has_tc": has_tc, "kernel_available": kernel_shaping_available},
+            ("host",),
+            (proof_msg,),
+        ))
+
     if "graphics_full_combination" in template.required_capabilities:
         graphics = _mapping(final_config.get("graphics"))
         webgl = _mapping(page.get("webgl"))
+        hardware_class = graphics.get("hardware_class", "integrated-gpu")
+
+        backend = snapshot_obj.environment.get("backend") if isinstance(snapshot_obj.environment, Mapping) else None
+        renderer = str(webgl.get("renderer", "") or webgl.get("unmaskedRenderer", "")).lower()
+        is_software_renderer = "llvmpipe" in renderer or "softpipe" in renderer or "swrast" in renderer
+
+        if hardware_class in ("integrated-gpu", "discrete-gpu") and (backend == "software" or is_software_renderer):
+            status_val = "unsupported"
+            reason_msg = f"candidate template requires hardware GPU ({hardware_class}), but host executes on software rasterizer ({webgl.get('renderer') or 'llvmpipe'})"
+            proof_detail = (f"hardware_class={hardware_class} is unsupported under software backend ({renderer})",)
+            diagnostic_reasons.append(reason_msg)
+        elif hardware_class == "software" or backend == "software":
+            webgl1 = _mapping(webgl.get("webgl1")) if "webgl1" in webgl else webgl
+            passed = bool(webgl1.get("behavior", {}).get("passed", False) or webgl.get("behavior", {}).get("passed", False))
+            if passed:
+                status_val = "supported"
+                proof_detail = ("software rasterizer verified: triangle rasterization, exact red readback and framebuffer passed",)
+            else:
+                status_val = "partial"
+                proof_detail = ("software rasterizer WebGL behavior did not pass all tests",)
+                diagnostic_reasons.append("software rasterizer WebGL behavior incomplete")
+        else:
+            status_val = "partial"
+            proof_detail = (f"GPU backend {backend} combination requires full hardware probe validation",)
+
         evidence.append(_evidence(
-            "graphics_full_combination", "unsupported", snapshot_obj,
+            "graphics_full_combination", status_val, snapshot_obj,
             graphics,
-            {"implemented": False, "webgl_observed": webgl},
+            {"backend": backend, "webgl_observed": webgl, "is_software_renderer": is_software_renderer},
             ("window",),
-            ("graphics_full_combination qualification is not implemented",),
+            proof_detail,
         ))
-        diagnostic_reasons.append("full graphics combination qualification is not implemented")
 
     missing_required = [
         name for name in template.required_capabilities

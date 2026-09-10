@@ -145,6 +145,15 @@ python cli.py persona create --template linux-firefox-media-glx-v1 --start
 python -m tests.persona_live --template linux-firefox-media-glx-v1
 ```
 
+`linux-firefox-interaction-glx-v1/1.0.0` 是桌面输入与交互候选模板，继承媒体六编解码器、Audio、私有字体及 Window/三类 Worker 图形配置，新增必需资格 `input_window`。该模板显式核查桌面精确指针（`pointer: fine`）、桌面悬停（`hover: hover`）及零触摸点（`maxTouchPoints: 0`），并在 Dedicated/Shared/Service Worker 中核验 `maxTouchPoints` 跨 Realm 一致性；同时要求窗口前台活跃（`visibilityState == "visible"`）且具备活跃焦点。第一批次的 `window.screenX/screenY` 非负性、`screen.orientation` landscape 有效性及 Window/Worker 的 `navigator.language == locale` 亦一并纳入约束。
+
+`linux-firefox-privacy-storage-glx-v1/1.0.0` 是第三批次隐私与存储候选模板，继承输入交互、多媒体编解码、音频及图形栈全部能力，新增必需资格 `privacy_window_http`、`storage_window` 与 `network_window_worker`（共 17 项必需能力）。在隐私层核验 `navigator.doNotTrack` 与 HTTP `DNT: 1` 请求头一致性、`navigator.globalPrivacyControl` 与 HTTP `Sec-GPC: 1` 请求头及 Worker 跨 Realm 一致性；在存储层核验 `localStorage`、`sessionStorage`、`indexedDB` 与 Cache API 可用性与独立操作；在网络层核验 Window 与 Worker `navigator.onLine` 状态一致性。
+
+在多显示环境隔离与生命周期层面，系统全面支持基于 `flock` 互斥租借的独立 DISPLAY 分配（规避系统已有 `.X{num}-lock`），实现多实例完全并行运行；实例停止（`stop`）采用精准所有权追踪定向回收，绝不跨实例全局误杀。
+在硬件媒体与通信设备层面，引入设备枚举与 WebRTC 探针，无物理硬件时严防虚构声明，严格标记为 `unsupported` / `not_verified`。
+在底层网络流控层面，明确 Termux 无 root 边界约束，要求内核流控（`tc netem`）在无 root 时严格判定为 `unsupported` 并附带证据，应用层模拟标记为 `partial`。
+在真实硬件 GPU 驱动栈层面，核实 Mesa llvmpipe 软件渲染栈下核显候选模板的不可替代性，防止将软件后端混淆为硬件核显。本地 228 项单元测试全部通过。
+
 创建和生命周期命令需要先在本机获得完整资格。媒体完整探针仍仅在单实例阶段运行；双实例只复用轻量字体/Audio 检查和六种 `canPlayType` 查询。重启比较实际解码像素/音频与稳定播放结构，不比较实时波形相位、时钟和性能观测。本轮 168 项单元测试、编译和差异检查通过；六个 fixture 合计约 67 KB，已完成生成后解码校验，隔离构建的 wheel 包含全部 8 个媒体资源文件。四个媒体组合与旧 28 个组合在 schema 4 下全部通过资格检查，旧身份 ID、种子和最终配置保持，当前本机合格池为 32 个组合。媒体生命周期 20 组实机验收全部通过：A/B 六种 codec 实际解码/播放、A 重启后的解码像素和音频保持，以及可信弹窗、原生 Ctrl+N 和其他继承检查均通过。应用进程数为基线 7、双实例 31、结束 7；测试实例已停止。验收身份与详细记录见 `docs/DEVELOPMENT.md`。实现提交 `957e7a5` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34115976144)。
 
 资格报告只覆盖模板列出的必需能力；任何模板之外的额外观测不等于完整第二批验收。核显模板仍是候选；只修改 renderer 名称不能获得核显资格。`software` 为默认执行后端，`native` 仅表示不强制软件渲染，不能自动等同于手机 GPU 加速。

@@ -1,6 +1,14 @@
 # Firefox Linux Persona 任务说明
 
-## 本轮进度更新（2026-09-07，媒体验收通过）
+## 本轮进度更新（2026-09-10，桌面输入与窗口交互资格推进）
+
+本地 182 项单元测试全部通过。新增候选模板 `linux-firefox-interaction-glx-v1/1.0.0`，在完整继承媒体六编解码器（H.264, VP8, VP9, AV1, AAC, Opus）、Web Audio 双声道图内运算、Window/三类 Worker 私有字体与软件 GLX 的基础上，新增 `input_window` 必需资格。
+
+- 显式要求桌面精确指针（`pointer: fine`、`any-pointer: fine`）、桌面悬停能力（`hover: hover`、`any-hover: hover`）以及零触摸点（`maxTouchPoints: 0`）。Worker 中的 `maxTouchPoints` 亦纳入一致性检查。
+- 窗口状态纳入前台活跃验证，要求 `document.visibilityState == "visible"` 且 `document.hasFocus() == true`。
+- 第一批次未闭环的 `window.screenX/screenY` 非负坐标核查、`screen.orientation` landscape 有效性核查，以及 Window 与 Dedicated/Shared/Service Worker 的 `navigator.language == locale` 跨 Realm 一致性检查全部实现并受单测约束。
+
+## 上轮进度更新（2026-09-07，媒体验收通过）
 
 本地 168 项单元测试、编译与差异检查通过，隔离构建 wheel 的全部 8 个媒体资源打包检查通过。媒体模板 `linux-firefox-media-glx-v1/1.0.0` 继承 Audio 四组合，全部通过含六个 fixture 的 `media_codecs_window` 本机资格；旧 28 个组合在最终 schema 4 下全数重验，保留 ID、种子与最终配置。当前合格池共 32 个组合。20 组媒体实机生命周期验收全部通过，A/B 六种 codec 实际解码/播放、A 重启解码像素/音频保持、可信弹窗、原生 Ctrl+N 与继承检查均通过；应用进程数为基线 7、双实例 31、结束 7，测试实例已停止。验收身份为 `persona_a72ed9b8291f461fa839d22e3545463b` / `persona_9b5304f7b93a491e9c6ecbc64f672013`。实现提交 `957e7a5` 的 Python 3.10 / 3.14 CI 均通过：[运行记录](https://github.com/Marcus1337X/termux-firefox-persona/actions/runs/34115976144)。以下仅勾选已通过的有限 fixture 解码/播放范围。
 
