@@ -295,10 +295,17 @@ class PersonaRuntime:
                     raise RuntimeError("Firefox has no browser context")
                 self.context = tree["contexts"][0]["context"]
                 self.root_wid = self.pilot._session._main_wid
+                if not self.root_wid:
+                    for _ in range(20):
+                        await asyncio.sleep(0.1)
+                        self.root_wid = await self.pilot._session._find_main_window()
+                        if self.root_wid:
+                            break
                 self.pilot._session.bind_javascript_evaluator(self.evaluate)
-                for state in ("MAXIMIZED_VERT", "MAXIMIZED_HORZ"):
-                    await self.pilot._session._xdt(
-                        ["windowstate", "--add", state, self.root_wid])
+                if self.root_wid:
+                    for state in ("MAXIMIZED_VERT", "MAXIMIZED_HORZ"):
+                        await self.pilot._session._xdt(
+                            ["windowstate", "--add", state, str(self.root_wid)])
                 await asyncio.sleep(0.4)
                 # One legacy daemon object per worker process preserves all
                 # upstream module state without sharing it between Personas.
