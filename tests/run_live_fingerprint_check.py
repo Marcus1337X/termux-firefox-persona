@@ -80,11 +80,41 @@ async def run_check():
         creep_eval = await manager.command(pid, "eval", {"expression": creep_js})
         print(f"[+] CreepJS Result: {json.dumps(creep_eval.get('result'), ensure_ascii=False, indent=2)}", flush=True)
 
-        # Capture screenshot for CreepJS
+        # Capture screenshot for CreepJS (both viewport and full-page stitched)
         try:
             creep_shot = ARTIFACTS_DIR / "creepjs_result.png"
             await manager.command(pid, "screenshot", {"path": str(creep_shot)})
-            print(f"[+] CreepJS Screenshot saved to {creep_shot}", flush=True)
+            print(f"[+] CreepJS Viewport Screenshot saved to {creep_shot}", flush=True)
+
+            # Capture full-page stitched screenshot
+            metrics = await manager.command(pid, "eval", {"expression": """(() => {
+                return {
+                    scrollHeight: document.documentElement.scrollHeight,
+                    innerHeight: window.innerHeight
+                };
+            })()"""})
+            m_res = metrics.get("result", {})
+            scroll_h = m_res.get("scrollHeight", 4000)
+            inner_h = m_res.get("innerHeight", 659)
+
+            slices = []
+            curr_y = 0
+            idx = 0
+            while curr_y < scroll_h:
+                await manager.command(pid, "eval", {"expression": f"window.scrollTo(0, {curr_y})"})
+                await asyncio.sleep(0.3)
+                s_path = ARTIFACTS_DIR / f"creepjs_slice_{idx}.png"
+                await manager.command(pid, "screenshot", {"path": str(s_path)})
+                slices.append(s_path)
+                idx += 1
+                if curr_y + inner_h >= scroll_h:
+                    break
+                curr_y += inner_h
+
+            full_shot = ARTIFACTS_DIR / "creepjs_full_page.png"
+            import subprocess
+            subprocess.run(["convert"] + [str(p) for p in slices] + ["-append", str(full_shot)], check=True)
+            print(f"[+] CreepJS Full-page Screenshot saved to {full_shot}", flush=True)
         except Exception as e:
             print(f"[-] Screenshot warning: {e}", flush=True)
 
